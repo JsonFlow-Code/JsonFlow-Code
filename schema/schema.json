@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "JSONFlow Ultimate Workflow Schema",
-  "description": "A groundbreaking DSL for defining workflows with blockchain, AI, quantum, and UI integration, designed for accessibility and production readiness.",
+  "description": "A groundbreaking DSL for defining workflows with blockchain, AI, quantum, UI, and game development integration, designed for accessibility and production readiness.",
   "type": "object",
   "required": ["function", "schema", "steps"],
   "properties": {
@@ -27,18 +27,24 @@
           "items": { "type": "string", "enum": ["solidity", "cairo", "rust", "python", "javascript", "go", "typescript", "java", "kotlin"] },
           "description": "Supported output languages for code generation."
         },
+        "game_engines": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["unity", "unreal", "godot", "custom"] },
+          "description": "Supported game engines for code generation."
+        },
         "dependencies": {
           "type": "object",
           "additionalProperties": {
             "type": "object",
             "properties": {
               "version": { "type": "string" },
-              "hash": { "type": "string" }
+              "hash": { "type": "string" },
+              "type": { "type": "string", "enum": ["library", "game_library", "asset"] }
             },
-            "required": ["version"],
+            "required": ["version", "type"],
             "additionalProperties": false
           },
-          "description": "External libraries or dependencies with version and hash for integrity."
+          "description": "External libraries, game libraries, or assets with version, hash, and type for integrity."
         }
       },
       "required": ["schema_version"],
@@ -56,6 +62,48 @@
         "permissions": { "type": "array", "items": { "type": "string" }, "description": "Permissions required for execution." }
       },
       "description": "Workflow-level access control policy."
+    },
+    "game": {
+      "type": "object",
+      "description": "Game development configuration for the workflow.",
+      "properties": {
+        "engine": {
+          "type": "string",
+          "enum": ["unity", "unreal", "godot", "custom"],
+          "description": "Target game engine for the workflow."
+        },
+        "platforms": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["pc", "console", "mobile", "web", "vr"] },
+          "description": "Target platforms for the game."
+        },
+        "asset_pipeline": {
+          "type": "object",
+          "properties": {
+            "formats": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["fbx", "gltf", "png", "wav", "mp3"] },
+              "description": "Supported asset formats."
+            },
+            "preprocessors": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Asset preprocessing tools or scripts."
+            }
+          },
+          "additionalProperties": false
+        },
+        "multiplayer": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string", "enum": ["p2p", "client-server", "hybrid"] },
+            "max_players": { "type": "integer", "minimum": 1 },
+            "network_protocol": { "type": "string", "enum": ["udp", "tcp", "websocket"] }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     },
     "schema": {
       "type": "object",
@@ -97,7 +145,7 @@
               },
               "ui": {
                 "$ref": "#/$defs/ui",
-                "description": "React-specific UI configuration for this input."
+                "description": "React or game-specific UI configuration for this input."
               }
             },
             "additionalProperties": false
@@ -122,7 +170,7 @@
                   { "type": "object", "additionalProperties": { "type": "string" } }
                 ]
               },
-              "source": { "type": "string", "enum": ["env", "config", "blockchain", "external_api"] }
+              "source": { "type": "string", "enum": ["env", "config", "blockchain", "external_api", "game_state", "player_input"] }
             },
             "additionalProperties": false
           }
@@ -133,7 +181,7 @@
             "type": "object",
             "required": ["type"],
             "properties": {
-              "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "object", "array", "null"] },
+              "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "object", "array", "null", "game_state", "render_output", "physics_state"] },
               "description": { "type": "string" },
               "nl_noun": {
                 "oneOf": [
@@ -149,7 +197,7 @@
               },
               "ui": {
                 "$ref": "#/$defs/ui",
-                "description": "React-specific UI configuration for this output."
+                "description": "React or game-specific UI configuration for this output."
               }
             },
             "additionalProperties": false
@@ -282,19 +330,37 @@
     "ui": {
       "type": "object",
       "properties": {
-        "component": { "type": "string", "description": "React component name (e.g., 'TextField', 'Button')." },
-        "props": { "type": "object", "additionalProperties": true, "description": "Props for the React component." },
+        "component": {
+          "type": "string",
+          "description": "React or game-specific component name (e.g., 'TextField', 'HUD', '3DCanvas')."
+        },
+        "props": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Props for the component, including game-specific props like position or rotation."
+        },
         "css": {
           "type": "object",
           "properties": {
             "className": { "type": "string", "description": "CSS class name for styling." },
-            "style": { "type": "object", "additionalProperties": true, "description": "Inline CSS styles." }
+            "style": { "type": "object", "additionalProperties": true, "description": "Inline CSS or 3D transform styles." }
           },
           "additionalProperties": false
+        },
+        "game_ui": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string", "enum": ["hud", "menu", "3d", "vr"] },
+            "position": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 },
+            "rotation": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+            "scale": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false,
+          "description": "Game-specific UI properties."
         }
       },
       "additionalProperties": true,
-      "description": "React-specific UI configuration."
+      "description": "React or game-specific UI configuration."
     },
     "common_step_properties": {
       "type": "object",
@@ -647,7 +713,7 @@
                 "action": {
                   "anyOf": [
                     { "type": "string", "enum": ["transfer", "mint", "burn", "governance", "bridge", "flash_loan", "swap", "liquidate"] },
-                    { "type": "string", "pattern": "^[a-zA-Z0-9_]+$" }
+                    { "type": "string", "pattern": "^[a-zAZ0-9_]+$" }
                   ]
                 },
                 "params": { "type": "object", "additionalProperties": true },
@@ -764,6 +830,113 @@
             }
           ],
           "additionalProperties": false
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/common_step_properties" },
+            {
+              "properties": {
+                "type": { "const": "game_render" },
+                "scene": { "$ref": "#/$defs/expr", "description": "Scene data or reference to render." },
+                "camera": {
+                  "type": "object",
+                  "properties": {
+                    "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+                    "rotation": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+                    "fov": { "type": "number" }
+                  },
+                  "required": ["position"],
+                  "additionalProperties": false
+                },
+                "render_target": { "type": "string", "description": "Target variable for rendered output." }
+              },
+              "required": ["type", "scene", "render_target"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/common_step_properties" },
+            {
+              "properties": {
+                "type": { "const": "game_physics" },
+                "objects": { "type": "array", "items": { "$ref": "#/$defs/expr" }, "description": "Game objects with physics properties." },
+                "simulation": {
+                  "type": "object",
+                  "properties": {
+                    "type": { "type": "string", "enum": ["rigid_body", "soft_body", "fluid"] },
+                    "gravity": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+                    "time_step": { "type": "number", "minimum": 0 }
+                  },
+                  "required": ["type"],
+                  "additionalProperties": false
+                },
+                "target": { "type": "string", "description": "Target variable for physics simulation results." }
+              },
+              "required": ["type", "objects", "simulation", "target"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/common_step_properties" },
+            {
+              "properties": {
+                "type": { "const": "game_multiplayer_sync" },
+                "state": { "$ref": "#/$defs/expr", "description": "Game state to synchronize." },
+                "sync_type": { "type": "string", "enum": ["state", "event", "delta"] },
+                "peers": { "type": "array", "items": { "type": "string" }, "description": "Peer IDs or addresses." },
+                "target": { "type": "string", "description": "Target variable for sync results." }
+              },
+              "required": ["type", "state", "sync_type", "target"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/common_step_properties" },
+            {
+              "properties": {
+                "type": { "const": "game_input" },
+                "input_type": { "type": "string", "enum": ["keyboard", "mouse", "controller", "touch", "vr"] },
+                "bindings": {
+                  "type": "object",
+                  "additionalProperties": { "type": "string" },
+                  "description": "Input action mappings (e.g., 'jump': 'space')."
+                },
+                "target": { "type": "string", "description": "Target variable for input data." }
+              },
+              "required": ["type", "input_type", "target"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/common_step_properties" },
+            {
+              "properties": {
+                "type": { "const": "game_animation" },
+                "target_object": { "$ref": "#/$defs/expr", "description": "Object to animate." },
+                "animation": {
+                  "type": "object",
+                  "properties": {
+                    "type": { "type": "string", "enum": ["skeletal", "keyframe", "procedural"] },
+                    "parameters": { "type": "object", "additionalProperties": true },
+                    "duration": { "type": "number", "minimum": 0 }
+                  },
+                  "required": ["type"],
+                  "additionalProperties": false
+                },
+                "target": { "type": "string", "description": "Target variable for animation results." }
+              },
+              "required": ["type", "target_object", "animation", "target"],
+              "additionalProperties": false
+            }
+          ]
         }
       ]
     },

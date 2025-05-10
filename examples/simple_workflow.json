@@ -1,0 +1,9 @@
+{
+    "function": "example",
+    "metadata": {"target_languages": ["python", "solidity"]},
+    "schema": {"inputs": {"x": 10}},
+    "steps": [
+        {"type": "set", "target": "y", "value": "context['x'] + 5"},
+        {"type": "blockchain_operation", "chain": "ethereum", "action": "transfer", "params": {"to": "0x123", "value": "1 ether"}}
+    ]
+}

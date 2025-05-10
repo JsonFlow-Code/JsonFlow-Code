@@ -1,0 +1,7 @@
+default_language: solidity
+blockchain:
+  ethereum:
+    endpoint: https://mainnet.infura.io/v3/YOUR_PROJECT_ID
+logging:
+  level: DEBUG
+  file: logs/app.log

@@ -1,0 +1,8 @@
+
+qiskit==0.46.0
+qiskit-aer==0.14.0.1
+cryptography==42.0.8
+python-dotenv==1.0.1
+pyyaml==6.0.1
+pytest==7.4.0
+jsonschema==4.17.3

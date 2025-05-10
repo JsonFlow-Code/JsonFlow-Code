@@ -1,0 +1,6 @@
+{
+        "function": "invalid",
+        "metadata": {"target_languages": ["julia"]},
+        "schema": {"inputs": {}},
+        "steps": [{"type": "set", "target": "", "value": {"value": 1}}]
+    }

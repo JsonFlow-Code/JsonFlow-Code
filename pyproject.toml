@@ -1,0 +1,9 @@
+[project]
+name = "jsonflow"
+version = "0.1.0"
+dependencies = [
+    "pytest",
+]
+
+[tool.setuptools]
+packages = ["src"]

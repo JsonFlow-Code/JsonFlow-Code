@@ -1,0 +1,21 @@
+{
+    "function": "example_workflow",
+    "schema": {
+        "inputs": {},
+        "context": {},
+        "outputs": {}
+    },
+    "steps": [
+        {
+            "type": "set",
+            "id": "step1",
+            "target": "result",
+            "value": {"value": "Hello, JSONFlow!"}
+        },
+        {
+            "type": "return",
+            "id": "step2",
+            "value": {"get": "result"}
+        }
+    ]
+}

@@ -1,33 +1,1226 @@
+import json
 import logging
-from typing import Dict, List, Any
+import re
+import ast
+import asyncio
+import time
+from typing import Dict, Any, List, Set, Optional, Union
+from jsonschema import validate, ValidationError
+from contextlib import contextmanager, asynccontextmanager
+from datetime import datetime
+import hashlib
+import esprima
+import lupa
+from qiskit import QuantumCircuit
+from solcx import compile_source
+from jinja2 import Environment, BaseLoader
+from web3 import Web3
+from eth_account import Account
+import aiohttp
+import numpy as np
+from prometheus_client import Counter, Histogram, Gauge
+import pygame
+import sys
+from typing import Callable
 
+# Setup structured logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler()]
+)
 logger = logging.getLogger(__name__)
+
+# Prometheus metrics for monitoring
+workflow_executions = Counter('workflow_executions_total', 'Total workflow executions', ['function'])
+step_executions = Counter('workflow_step_executions_total', 'Total step executions', ['step_type'])
+execution_duration = Histogram('workflow_execution_duration_seconds', 'Workflow execution duration', ['function'])
+step_errors = Counter('workflow_step_errors_total', 'Total step execution errors', ['step_type'])
+resource_usage = Gauge('workflow_resource_usage', 'Resource usage during execution', ['resource_type'])
+
+class WorkflowValidationError(Exception):
+    """Custom exception for workflow validation errors."""
+    def __init__(self, message: str, path: Optional[str] = None):
+        super().__init__(message)
+        self.path = path
+
+@contextmanager
+def validation_context(description: str):
+    """Context manager for logging validation steps."""
+    logger.info(f"Starting validation: {description}")
+    try:
+        yield
+    except Exception as e:
+        logger.error(f"Validation failed: {description} - {str(e)}")
+        raise
+    finally:
+        logger.info(f"Completed validation: {description}")
+
+@asynccontextmanager
+async def execution_context(description: str):
+    """Async context manager for execution steps."""
+    logger.info(f"Starting execution: {description}")
+    start_time = time.time()
+    try:
+        yield
+    except Exception as e:
+        logger.error(f"Execution failed: {description} - {str(e)}")
+        raise
+    finally:
+        duration = time.time() - start_time
+        logger.info(f"Completed execution: {description} in {duration:.2f}s")
 
 class Workflow:
     """
     Represents a JSONFlow workflow with blockchain, AI, quantum, and game development features.
+    Provides comprehensive validation and execution capabilities for production use.
     """
-    def __init__(self, data: Dict[str, Any]):
+    def __init__(self, data: Dict[str, Any], schema: Dict[str, Any]):
         """
-        Initialize a Workflow object from parsed JSON data.
-        
+        Initialize a Workflow object from parsed JSON data and schema.
+
         Args:
             data (Dict[str, Any]): Parsed workflow JSON data.
+            schema (Dict[str, Any]): JSON schema for validation.
+
+        Raises:
+            WorkflowValidationError: If validation fails during initialization.
         """
         logger.debug(f"Initializing workflow: {data.get('function', 'unknown')}")
-        self.function: str = data['function']
-        self.metadata: Dict[str, Any] = data.get('metadata', {})
-        self.schema: Dict[str, Any] = data.get('schema', {})
-        self.steps: List[Dict[str, Any]] = data['steps']
-        self.game: Dict[str, Any] = data.get('game', {})
-        self.ui: Dict[str, Any] = data.get('ui', {})
-        self.access_policy: Dict[str, Any] = data.get('access_policy', {})
-        self.invariants: List[Dict[str, Any]] = data.get('invariants', [])
-        self.tests: List[Dict[str, Any]] = data.get('tests', [])
-        self.attestation: Dict[str, Any] = data.get('attestation', {})
-        self.history: List[Dict[str, Any]] = data.get('history', [])
-        self.execution_policy: Dict[str, Any] = data.get('execution_policy', {})
-        self.secrets: List[Dict[str, Any]] = data.get('secrets', [])
-        self.subworkflows: List[str] = data.get('subworkflows', [])
-        self.verification_results: List[Dict[str, Any]] = data.get('verification_results', [])
-        self.resource_estimates: Dict[str, float] = data.get('resource_estimates', {})
+        workflow_executions.labels(function=data.get('function', 'unknown')).inc()
+        
+        self.schema = schema
+        self.function: str = ""
+        self.metadata: Dict[str, Any] = {}
+        self.schema_data: Dict[str, Any] = {}
+        self.steps: List[Dict[str, Any]] = []
+        self.game: Dict[str, Any] = {}
+        self.ui: Dict[str, Any] = {}
+        self.access_policy: Dict[str, Any] = {}
+        self.invariants: List[Dict[str, Any]] = []
+        self.tests: List[Dict[str, Any]] = []
+        self.attestation: Dict[str, Any] = {}
+        self.history: List[Dict[str, Any]] = []
+        self.execution_policy: Dict[str, Any] = {}
+        self.secrets: List[Dict[str, Any]] = []
+        self.subworkflows: List[str] = []
+        self.verification_results: List[Dict[str, Any]] = []
+        self.resource_estimates: Dict[str, float] = {}
+
+        # Initialize validation resources
+        self.supported_languages = {
+            "cpp", "go", "javascript", "julia", "mermaid", "perl", "python",
+            "qiskit", "react", "rust", "solidity", "typescript", "cairo",
+            "java", "kotlin", "lua"
+        }
+        self.supported_game_engines = {"unity", "unreal", "godot", "bevy", "custom"}
+        self.reserved_keywords = {
+            "cpp": {"class", "namespace", "void", "int", "return", "template", "static", "const"},
+            "go": {"func", "package", "import", "var", "return", "defer", "go", "select"},
+            "javascript": {"function", "var", "let", "const", "return", "async", "await", "class"},
+            "typescript": {"function", "let", "const", "interface", "return", "type", "async", "await"},
+            "react": {"function", "let", "const", "return", "useState", "useEffect", "component"},
+            "julia": {"function", "end", "return", "module", "struct", "macro"},
+            "perl": {"sub", "my", "return", "package", "use", "our"},
+            "python": {"def", "return", "class", "import", "async", "await", "with", "try"},
+            "qiskit": {"def", "return", "class", "import", "QuantumCircuit", "measure"},
+            "rust": {"fn", "let", "return", "struct", "impl", "async", "await", "mut"},
+            "solidity": {"function", "contract", "return", "public", "external", "view", "pure"},
+            "cairo": {"func", "return", "let", "namespace", "struct", "felt"},
+            "java": {"class", "public", "private", "return", "void", "static", "final"},
+            "kotlin": {"fun", "val", "var", "return", "class", "override", "lateinit"},
+            "lua": {"function", "local", "return", "end", "if", "then"},
+            "mermaid": set()
+        }
+        self.valid_blockchains = {"ethereum", "solana", "starknet", "cosmos", "polkadot", "binance", "avalanche"}
+        self.valid_asset_formats = {"fbx", "gltf", "png", "jpg", "wav", "mp3", "ogg", "blend", "dae"}
+        self.valid_platforms = {"pc", "console", "mobile", "web", "vr", "ar"}
+        self.jinja_env = Environment(loader=BaseLoader())
+        self.lua_runtime = lupa.LuaRuntime()
+        self.web3_providers = {
+            "ethereum": Web3(Web3.HTTPProvider("https://mainnet.infura.io/v3/YOUR_PROJECT_ID")),
+            "solana": None,
+            "starknet": None
+        }
+        self.session = None
+        self.pygame_initialized = False
+        self.execution_state = {"running": False, "last_execution": None}
+        
+        # Validate and initialize data
+        asyncio.run(self._validate_and_initialize(data))
+
+    async def _init_session(self):
+        """Initialize aiohttp session."""
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
+
+    async def __aenter__(self):
+        await self._init_session()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self.session:
+            await self.session.close()
+
+    def _init_pygame(self):
+        """Initialize pygame for game-related steps."""
+        if not self.pygame_initialized:
+            pygame.init()
+            self.pygame_initialized = True
+            logger.info("Pygame initialized for game steps")
+
+    async def _validate_and_initialize(self, data: Dict[str, Any]) -> None:
+        """Validate workflow data and initialize attributes."""
+        async with self:
+            with validation_context(f"Workflow {data.get('function', 'unknown')}"):
+                try:
+                    # JSON Schema validation
+                    validate(instance=data, schema=self.schema)
+                    logger.info("JSON Schema validation passed")
+
+                    # Comprehensive custom validation
+                    await asyncio.gather(
+                        self._validate_function(data),
+                        self._validate_metadata(data),
+                        self._validate_schema(data),
+                        self._validate_game(data),
+                        self._validate_access_policy(data),
+                        self._validate_execution_policy(data),
+                        self._validate_secrets(data),
+                        self._validate_invariants(data),
+                        self._validate_tests(data),
+                        self._validate_attestation(data),
+                        self._validate_history(data),
+                        self._validate_resource_estimates(data),
+                        self._validate_ui(data),
+                        self._validate_subworkflows(data),
+                        self._validate_verification_results(data),
+                        self._validate_steps(data.get("steps", []), set()),
+                    )
+
+                    # Initialize attributes after validation
+                    self.function = data["function"]
+                    self.metadata = data.get("metadata", {})
+                    self.schema_data = data.get("schema", {})
+                    self.steps = data["steps"]
+                    self.game = data.get("game", {})
+                    self.ui = data.get("ui", {})
+                    self.access_policy = data.get("access_policy", {})
+                    self.invariants = data.get("invariants", [])
+                    self.tests = data.get("tests", [])
+                    self.attestation = data.get("attestation", {})
+                    self.history = data.get("history", [])
+                    self.execution_policy = data.get("execution_policy", {})
+                    self.secrets = data.get("secrets", [])
+                    self.subworkflows = data.get("subworkflows", [])
+                    self.verification_results = data.get("verification_results", [])
+                    self.resource_estimates = data.get("resource_estimates", {})
+
+                    logger.info("Workflow initialized successfully")
+                except ValidationError as e:
+                    raise WorkflowValidationError(f"Schema validation failed: {e.message} at {e.json_path}", e.json_path)
+                except Exception as e:
+                    raise WorkflowValidationError(f"Validation failed: {str(e)}")
+
+    async def _validate_function(self, data: Dict[str, Any]) -> None:
+        """Validate function name across all target languages."""
+        with validation_context("Function name"):
+            function = data.get("function")
+            if not function:
+                raise WorkflowValidationError("Missing function name")
+            
+            if not re.match(r"^[a-zA-Z][a-zA-Z0-9_]{1,63}$", function):
+                raise WorkflowValidationError(f"Invalid function name: {function}. Must match ^[a-zA-Z][a-zA-Z0-9_]{1,63}$")
+            
+            target_languages = data.get("metadata", {}).get("target_languages", self.supported_languages)
+            for lang in target_languages:
+                if lang not in self.supported_languages:
+                    raise WorkflowValidationError(f"Unsupported target language: {lang}")
+                if function.lower() in self.reserved_keywords.get(lang, set()):
+                    raise WorkflowValidationError(f"Function name '{function}' is reserved in {lang}")
+
+    async def _validate_metadata(self, data: Dict[str, Any]) -> None:
+        """Validate metadata with version and dependency checks."""
+        with validation_context("Metadata"):
+            metadata = data.get("metadata", {})
+            if not metadata.get("schema_version") or not re.match(r"^\d+\.\d+\.\d+$", metadata["schema_version"]):
+                raise WorkflowValidationError("Invalid or missing schema_version")
+            
+            if not metadata.get("version") or not re.match(r"^\d+\.\d+\.\d+$", metadata["version"]):
+                raise WorkflowValidationError("Invalid or missing version")
+            
+            if not metadata.get("author") or len(metadata["author"]) > 100:
+                raise WorkflowValidationError("Invalid or missing author")
+            
+            if not metadata.get("description") or len(metadata["description"]) > 1000:
+                raise WorkflowValidationError("Invalid or missing description")
+            
+            if metadata.get("created"):
+                try:
+                    datetime.fromisoformat(metadata["created"].replace("Z", "+00:00"))
+                except ValueError:
+                    raise WorkflowValidationError("Invalid created date format")
+            
+            for lang in metadata.get("target_languages", []):
+                if lang not in self.supported_languages:
+                    raise WorkflowValidationError(f"Invalid target language: {lang}")
+            
+            for engine in metadata.get("game_engines", []):
+                if engine not in self.supported_game_engines:
+                    raise WorkflowValidationError(f"Invalid game engine: {engine}")
+            
+            for dep_name, dep in metadata.get("dependencies", {}).items():
+                if not re.match(r"^[a-zA-Z0-9_.-]+$", dep_name):
+                    raise WorkflowValidationError(f"Invalid dependency name: {dep_name}")
+                if not re.match(r"^\d+\.\d+\.\d+$", dep.get("version", "")):
+                    raise WorkflowValidationError(f"Invalid version for dependency {dep_name}")
+                if not re.match(r"^[a-fA-F0-9]{64}$", dep.get("hash", "")):
+                    raise WorkflowValidationError(f"Invalid hash for dependency {dep_name}")
+                if dep.get("type") not in ["library", "game_library", "asset", "contract"]:
+                    raise WorkflowValidationError(f"Invalid type for dependency {dep_name}")
+                if dep.get("source") and not re.match(r"^(http|https|file)://", dep["source"]):
+                    raise WorkflowValidationError(f"Invalid source for dependency {dep_name}")
+
+    async def _validate_schema(self, data: Dict[str, Any]) -> None:
+        """Validate inputs, context, and outputs in schema."""
+        with validation_context("Schema"):
+            schema = data.get("schema", {})
+            for section in ["inputs", "context", "outputs"]:
+                for key, spec in schema.get(section, {}).items():
+                    if not re.match(r"^[a-zA-Z0-9_]+$", key):
+                        raise WorkflowValidationError(f"Invalid key for {section}.{key}")
+                    if not spec.get("type"):
+                        raise WorkflowValidationError(f"Missing type for {section}.{key}")
+                    
+                    valid_types = ["string", "integer", "number", "boolean", "object", "array", "null"]
+                    if section == "outputs":
+                        valid_types.extend(["game_state", "render_output", "physics_state", "quantum_state"])
+                    
+                    if spec["type"] not in valid_types:
+                        raise WorkflowValidationError(f"Invalid type for {section}.{key}: {spec['type']}")
+                    
+                    if section == "context" and spec.get("source") not in [
+                        "env", "config", "blockchain", "external_api", "game_state", "player_input", "database", "quantum_simulator"
+                    ]:
+                        raise WorkflowValidationError(f"Invalid source for context.{key}: {spec['source']}")
+                    
+                    if "constraints" in spec:
+                        constraints = spec["constraints"]
+                        if "minLength" in constraints and constraints["minLength"] < 0:
+                            raise WorkflowValidationError(f"Invalid minLength for {section}.{key}")
+                        if "maxLength" in constraints and constraints["maxLength"] < constraints.get("minLength", 0):
+                            raise WorkflowValidationError(f"Invalid maxLength for {section}.{key}")
+                        if "pattern" in constraints and not self._is_valid_regex(constraints["pattern"]):
+                            raise WorkflowValidationError(f"Invalid regex pattern for {section}.{key}")
+                        if "enum" in constraints and not constraints["enum"]:
+                            raise WorkflowValidationError(f"Empty enum for {section}.{key}")
+                        if "minimum" in constraints and "maximum" in constraints and constraints["minimum"] > constraints["maximum"]:
+                            raise WorkflowValidationError(f"Invalid range for {section}.{key}")
+                    
+                    if "ui" in spec:
+                        await self._validate_ui_definition(spec["ui"], f"{section}.{key}.ui")
+
+    async def _validate_steps(self, steps: List[Dict[str, Any]], seen_ids: Set[str]) -> None:
+        """Recursively validate all steps."""
+        with validation_context("Steps"):
+            for step in steps:
+                step_id = step.get("id")
+                if not step_id or not re.match(r"^[a-zA-Z0-9_]+$", step_id):
+                    raise WorkflowValidationError("Missing or invalid step ID")
+                if step_id in seen_ids:
+                    raise WorkflowValidationError(f"Duplicate step ID: {step_id}")
+                seen_ids.add(step_id)
+                
+                step_type = step.get("type")
+                if not step_type:
+                    raise WorkflowValidationError(f"Missing type for step {step_id}")
+                
+                await self._validate_common_step_properties(step, step_id)
+                
+                step_handlers = {
+                    "set": self._validate_set_step,
+                    "if": self._validate_if_step,
+                    "return": self._validate_return_step,
+                    "call": self._validate_call_step,
+                    "try": self._validate_try_step,
+                    "while": self._validate_while_step,
+                    "foreach": self._validate_foreach_step,
+                    "parallel": self._validate_parallel_step,
+                    "assert": self._validate_assert_step,
+                    "event": self._validate_event_step,
+                    "require_role": self._validate_require_role_step,
+                    "ai_infer": self._validate_ai_step,
+                    "ai_train": self._validate_ai_step,
+                    "ai_classify": self._validate_ai_step,
+                    "ai_embed": self._validate_ai_step,
+                    "ai_explain": self._validate_ai_step,
+                    "quantum_circuit": self._validate_quantum_step,
+                    "quantum_measure": self._validate_quantum_step,
+                    "quantum_algorithm": self._validate_quantum_step,
+                    "blockchain_operation": self._validate_blockchain_step,
+                    "crypto_sign": self._validate_crypto_sign_step,
+                    "crypto_verify": self._validate_crypto_verify_step,
+                    "regex_match": self._validate_regex_match_step,
+                    "audit_log": self._validate_audit_log_step,
+                    "call_workflow": self._validate_call_workflow_step,
+                    "game_render": self._validate_game_step,
+                    "game_physics": self._validate_game_step,
+                    "game_multiplayer_sync": self._validate_game_step,
+                    "game_input": self._validate_game_step,
+                    "game_animation": self._validate_game_step,
+                    "script": self._validate_script_step
+                }
+                
+                if step_type.startswith("custom_"):
+                    await self._validate_custom_step(step, step_id)
+                elif step_type in step_handlers:
+                    await step_handlers[step_type](step, step_id, seen_ids if step_type in ["if", "try", "while", "foreach", "parallel"] else None)
+                else:
+                    raise WorkflowValidationError(f"Unknown step type for step {step_id}: {step_type}")
+
+    async def _validate_common_step_properties(self, step: Dict[str, Any], step_id: str) -> None:
+        """Validate common properties across all steps."""
+        with validation_context(f"Common properties for step {step_id}"):
+            if "timeout" in step:
+                timeout = step["timeout"]
+                if not re.match(r"^\d+[smh]$", timeout.get("duration", "")):
+                    raise WorkflowValidationError(f"Invalid timeout duration for step {step_id}: {timeout.get('duration')}")
+                if timeout.get("action") not in ["skip", "retry", "fail"]:
+                    raise WorkflowValidationError(f"Invalid timeout action for step {step_id}: {timeout.get('action')}")
+                if timeout.get("max_retries", 0) < 0 or timeout.get("max_retries", 0) > 10:
+                    raise WorkflowValidationError(f"Invalid max_retries for step {step_id}")
+            
+            if "access_control" in step:
+                for role in step["access_control"].get("roles", []):
+                    if not re.match(r"^[a-zA-Z0-9_]+$", role):
+                        raise WorkflowValidationError(f"Invalid role for step {step_id}: {role}")
+                for perm in step["access_control"].get("permissions", []):
+                    if not re.match(r"^[a-zA-Z0-9_]+$", perm):
+                        raise WorkflowValidationError(f"Invalid permission for step {step_id}: {perm}")
+            
+            if "ui" in step:
+                await self._validate_ui_definition(step["ui"], f"step.{step_id}.ui")
+            
+            if "resource_estimates" in step:
+                for key in ["cpu", "memory", "storage", "network"]:
+                    if step["resource_estimates"].get(key, 0) < 0:
+                        raise WorkflowValidationError(f"Invalid {key} estimate for step {step_id}")
+            
+            if "on_error" in step:
+                on_error = step["on_error"]
+                if on_error.get("step_id") == step_id:
+                    raise WorkflowValidationError(f"Self-referential on_error step_id in step {step_id}")
+                if "body" in on_error:
+                    await self._validate_steps(on_error["body"], seen_ids=set())
+
+    async def _validate_set_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate set step."""
+        with validation_context(f"Set step {step_id}"):
+            if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+            await self._validate_expression(step.get("value", {}), step_id, "value")
+
+    async def _validate_if_step(self, step: Dict[str, Any], step_id: str, seen_ids: Set[str]) -> None:
+        """Validate if step."""
+        with validation_context(f"If step {step_id}"):
+            await self._validate_expression(step.get("condition", {}), step_id, "condition")
+            await self._validate_steps(step.get("then", []), seen_ids.copy())
+            if "else" in step:
+                await self._validate_steps(step.get("else", []), seen_ids.copy())
+
+    async def _validate_return_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate return step."""
+        with validation_context(f"Return step {step_id}"):
+            await self._validate_expression(step.get("value", {}), step_id, "value")
+
+    async def _validate_call_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate call step."""
+        with validation_context(f"Call step {step_id}"):
+            if not step.get("function") or not re.match(r"^[a-zA-Z0-9_]+$", step["function"]):
+                raise WorkflowValidationError(f"Missing or invalid function for step {step_id}")
+            if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+            for arg_name, expr in step.get("args", {}).items():
+                if not re.match(r"^[a-zA-Z0-9_]+$", arg_name):
+                    raise WorkflowValidationError(f"Invalid argument name for step {step_id}: {arg_name}")
+                await self._validate_expression(expr, step_id, f"args.{arg_name}")
+
+    async def _validate_try_step(self, step: Dict[str, Any], step_id: str, seen_ids: Set[str]) -> None:
+        """Validate try step."""
+        with validation_context(f"Try step {step_id}"):
+            await self._validate_steps(step.get("body", []), seen_ids.copy())
+            if "catch" in step:
+                if not step["catch"].get("error_var") or not re.match(r"^[a-zA-Z0-9_]+$", step["catch"]["error_var"]):
+                    raise WorkflowValidationError(f"Missing or invalid error_var for catch in step {step_id}")
+                await self._validate_steps(step["catch"].get("body", []), seen_ids.copy())
+            if "finally" in step:
+                await self._validate_steps(step["finally"], seen_ids.copy())
+
+    async def _validate_while_step(self, step: Dict[str, Any], step_id: str, seen_ids: Set[str]) -> None:
+        """Validate while step."""
+        with validation_context(f"While step {step_id}"):
+            await self._validate_expression(step.get("condition", {}), step_id, "condition")
+            if step.get("max_iterations", 1000) < 1 or step.get("max_iterations", 1000) > 10000:
+                raise WorkflowValidationError(f"Invalid max_iterations for step {step_id}")
+            await self._validate_steps(step.get("body", []), seen_ids.copy())
+
+    async def _validate_foreach_step(self, step: Dict[str, Any], step_id: str, seen_ids: Set[str]) -> None:
+        """Validate foreach step."""
+        with validation_context(f"Foreach step {step_id}"):
+            await self._validate_expression(step.get("collection", {}), step_id, "collection")
+            if not step.get("iterator") or not re.match(r"^[a-zA-Z0-9_]+$", step["iterator"]):
+                raise WorkflowValidationError(f"Missing or invalid iterator for step {step_id}")
+            await self._validate_steps(step.get("body", []), seen_ids.copy())
+
+    async def _validate_parallel_step(self, step: Dict[str, Any], step_id: str, seen_ids: Set[str]) -> None:
+        """Validate parallel step."""
+        with validation_context(f"Parallel step {step_id}"):
+            if not step.get("branches"):
+                raise WorkflowValidationError(f"Missing branches for step {step_id}")
+            if step.get("merge_strategy") not in ["all", "first", "last", "merge"]:
+                raise WorkflowValidationError(f"Invalid merge_strategy for step {step_id}")
+            for i, branch in enumerate(step.get("branches", [])):
+                if not branch:
+                    raise WorkflowValidationError(f"Empty branch[{i}] for step {step_id}")
+                await self._validate_steps(branch, seen_ids.copy())
+            if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+
+    async def _validate_assert_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate assert step."""
+        with validation_context(f"Assert step {step_id}"):
+            await self._validate_expression(step.get("condition", {}), step_id, "condition")
+            if not step.get("message") or len(step["message"]) > 500:
+                raise WorkflowValidationError(f"Missing or too long message for step {step_id}")
+
+    async def _validate_event_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate event step."""
+        with validation_context(f"Event step {step_id}"):
+            if not step.get("name") or not re.match(r"^[a-zA-Z0-9_]+$", step["name"]):
+                raise WorkflowValidationError(f"Missing or invalid name for step {step_id}")
+            await self._validate_expression(step.get("payload", {}), step_id, "payload")
+
+    async def _validate_require_role_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate require_role step."""
+        with validation_context(f"Require_role step {step_id}"):
+            if not step.get("role") or not re.match(r"^[a-zA-Z0-9_]+$", step["role"]):
+                raise WorkflowValidationError(f"Missing or invalid role for step {step_id}")
+            if step.get("policy") and step["policy"] not in ["rbac", "abac"]:
+                raise WorkflowValidationError(f"Invalid policy for step {step_id}: {step.get('policy')}")
+
+    async def _validate_ai_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate AI steps."""
+        with validation_context(f"AI step {step_id}"):
+            if not step.get("model") or not re.match(r"^[a-zA-Z0-9_.-]+$", step["model"]):
+                raise WorkflowValidationError(f"Missing or invalid model for step {step_id}")
+            await self._validate_expression(step.get("input", {}), step_id, "input")
+            if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+            if step.get("framework") and step["framework"] not in ["tensorflow", "pytorch", "sklearn", "huggingface"]:
+                raise WorkflowValidationError(f"Invalid framework for step {step_id}: {step.get('framework')}")
+
+    async def _validate_quantum_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate quantum steps."""
+        with validation_context(f"Quantum step {step_id}"):
+            if step["type"] == "quantum_circuit":
+                if not step.get("qubits") or step["qubits"] < 1 or step["qubits"] > 100:
+                    raise WorkflowValidationError(f"Invalid qubits for step {step_id}: {step.get('qubits')}")
+                valid_gates = {"H", "X", "Y", "Z", "CNOT", "T", "S", "RX", "RY", "RZ", "SWAP", "TOFFOLI", "CZ", "CPHASE"}
+                for gate in step.get("gates", []):
+                    if gate.get("gate") not in valid_gates:
+                        raise WorkflowValidationError(f"Invalid gate for step {step_id}: {gate.get('gate')}")
+                    if not gate.get("target") or not isinstance(gate["target"], (int, list)):
+                        raise WorkflowValidationError(f"Missing or invalid target for gate in step {step_id}")
+                    if gate.get("gate") in ["RX", "RY", "RZ", "CPHASE"] and not isinstance(gate.get("angle"), (int, float)):
+                        raise WorkflowValidationError(f"Missing or invalid angle for gate {gate.get('gate')} in step {step_id}")
+                    if gate.get("gate") in ["CNOT", "CZ", "CPHASE", "SWAP"] and not gate.get("control"):
+                        raise WorkflowValidationError(f"Missing control qubit for gate {gate.get('gate')} in step {step_id}")
+                try:
+                    circuit = QuantumCircuit(step["qubits"])
+                    for gate in step.get("gates", []):
+                        if gate["gate"] == "H":
+                            circuit.h(gate["target"])
+                        elif gate["gate"] == "CNOT":
+                            circuit.cx(gate["control"], gate["target"])
+                        elif gate["gate"] == "X":
+                            circuit.x(gate["target"])
+                        elif gate["gate"] == "Y":
+                            circuit.y(gate["target"])
+                        elif gate["gate"] == "Z":
+                            circuit.z(gate["target"])
+                        elif gate["gate"] == "T":
+                            circuit.t(gate["target"])
+                        elif gate["gate"] == "S":
+                            circuit.s(gate["target"])
+                        elif gate["gate"] == "RX":
+                            circuit.rx(gate["angle"], gate["target"])
+                        elif gate["gate"] == "RY":
+                            circuit.ry(gate["angle"], gate["target"])
+                        elif gate["gate"] == "RZ":
+                            circuit.rz(gate["angle"], gate["target"])
+                        elif gate["gate"] == "SWAP":
+                            circuit.swap(gate["control"], gate["target"])
+                        elif gate["gate"] == "TOFFOLI":
+                            circuit.ccx(gate["control"][0], gate["control"][1], gate["target"])
+                        elif gate["gate"] == "CZ":
+                            circuit.cz(gate["control"], gate["target"])
+                        elif gate["gate"] == "CPHASE":
+                            circuit.cp(gate["angle"], gate["control"], gate["target"])
+                except Exception as e:
+                    raise WorkflowValidationError(f"Invalid quantum circuit for step {step_id}: {str(e)}")
+            elif step["type"] == "quantum_measure":
+                await self._validate_expression(step.get("circuit", {}), step_id, "circuit")
+                if not step.get("qubits") or not isinstance(step["qubits"], list):
+                    raise WorkflowValidationError(f"Missing or invalid qubits for step {step_id}")
+                if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                    raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+            elif step["type"] == "quantum_algorithm":
+                valid_algorithms = {"grover", "shor", "qft", "vqe", "qaoa", "deutsch_jozsa"}
+                if step.get("algorithm") not in valid_algorithms:
+                    raise WorkflowValidationError(f"Invalid algorithm for step {step_id}: {step.get('algorithm')}")
+                if not step.get("parameters") or not isinstance(step["parameters"], dict):
+                    raise WorkflowValidationError(f"Missing or invalid parameters for step {step_id}")
+                if step.get("simulator") not in ["qasm_simulator", "statevector_simulator", "unitary_simulator"]:
+                    raise WorkflowValidationError(f"Invalid simulator for step {step_id}: {step.get('simulator')}")
+
+    async def _validate_blockchain_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate blockchain operation step."""
+        with validation_context(f"Blockchain step {step_id}"):
+            if step.get("chain") not in self.valid_blockchains:
+                raise WorkflowValidationError(f"Invalid chain for step {step_id}: {step.get('chain')}")
+            valid_actions = {"transfer", "mint", "burn", "governance", "bridge", "flash_loan", "swap", "liquidate", "deploy_contract"}
+            if step.get("action") not in valid_actions:
+                raise WorkflowValidationError(f"Invalid action for step {step_id}: {step.get('action')}")
+            if not step.get("params") or not isinstance(step["params"], dict):
+                raise WorkflowValidationError(f"Missing or invalid params for step {step_id}")
+            if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+            if "gas" in step:
+                gas = step["gas"]
+                if gas.get("limit", 21000) < 21000 or gas.get("limit", 21000) > 30000000:
+                    raise WorkflowValidationError(f"Invalid gas limit for step {step_id}: {gas.get('limit')}")
+                if gas.get("max_fee_per_gas", 0) < 0:
+                    raise WorkflowValidationError(f"Invalid max_fee_per_gas for step {step_id}")
+                if gas.get("max_priority_fee_per_gas", 0) < 0:
+                    raise WorkflowValidationError(f"Invalid max_priority_fee_per_gas for step {step_id}")
+            if step["chain"] == "ethereum" and step.get("action") == "deploy_contract":
+                if not step["params"].get("source"):
+                    raise WorkflowValidationError(f"Missing contract source for step {step_id}")
+                try:
+                    compile_source(step["params"]["source"], output_values=["abi", "bin"])
+                except Exception as e:
+                    raise WorkflowValidationError(f"Invalid Solidity contract for step {step_id}: {str(e)}")
+
+    async def _validate_crypto_sign_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate crypto_sign step."""
+        with validation_context(f"Crypto_sign step {step_id}"):
+            valid_algorithms = {"ecdsa", "ed25519", "rsa", "schnorr"}
+            if step.get("algorithm") not in valid_algorithms:
+                raise WorkflowValidationError(f"Invalid algorithm for step {step_id}: {step.get('algorithm')}")
+            await self._validate_expression(step.get("data", {}), step_id, "data")
+            await self._validate_expression(step.get("key", {}), step_id, "key")
+            if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+            if step["algorithm"] == "ecdsa" and step.get("chain") == "ethereum":
+                key = step.get("key", {}).get("value", "")
+                if isinstance(key, str) and not re.match(r"^0x[a-fA-F0-9]{64}$", key):
+                    raise WorkflowValidationError(f"Invalid Ethereum private key for step {step_id}")
+
+    async def _validate_crypto_verify_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate crypto_verify step."""
+        with validation_context(f"Crypto_verify step {step_id}"):
+            valid_algorithms = {"ecdsa", "ed25519", "rsa", "schnorr"}
+            if step.get("algorithm") not in valid_algorithms:
+                raise WorkflowValidationError(f"Invalid algorithm for step {step_id}: {step.get('algorithm')}")
+            await self._validate_expression(step.get("data", {}), step_id, "data")
+            await self._validate_expression(step.get("signature", {}), step_id, "signature")
+            await self._validate_expression(step.get("key", {}), step_id, "key")
+            if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+            if step["algorithm"] == "ecdsa" and step.get("chain") == "ethereum":
+                signature = step.get("signature", {}).get("value", "")
+                if isinstance(signature, str) and not re.match(r"^0x[a-fA-F0-9]+$", signature):
+                    raise WorkflowValidationError(f"Invalid Ethereum signature for step {step_id}")
+
+    async def _validate_regex_match_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate regex_match step."""
+        with validation_context(f"Regex_match step {step_id}"):
+            if not step.get("pattern"):
+                raise WorkflowValidationError(f"Missing pattern for step {step_id}")
+            if not self._is_valid_regex(step["pattern"]):
+                raise WorkflowValidationError(f"Invalid regex pattern for step {step_id}: {step['pattern']}")
+            await self._validate_expression(step.get("input", {}), step_id, "input")
+            if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+
+    async def _validate_audit_log_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate audit_log step."""
+        with validation_context(f"Audit_log step {step_id}"):
+            if not step.get("message") or len(step["message"]) > 1000:
+                raise WorkflowValidationError(f"Missing or too long message for step {step_id}")
+            if step.get("metadata"):
+                if not isinstance(step["metadata"], dict):
+                    raise WorkflowValidationError(f"Invalid metadata for step {step_id}")
+                if len(json.dumps(step["metadata"])) > 5000:
+                    raise WorkflowValidationError(f"Metadata too large for step {step_id}")
+
+    async def _validate_call_workflow_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate call_workflow step."""
+        with validation_context(f"Call_workflow step {step_id}"):
+            if not step.get("workflow"):
+                raise WorkflowValidationError(f"Missing workflow URI for step {step_id}")
+            if not re.match(r"^(http|https|file)://[a-zA-Z0-9_./-]+$", step["workflow"]):
+                raise WorkflowValidationError(f"Invalid workflow URI for step {step_id}: {step['workflow']}")
+            for arg_name, expr in step.get("args", {}).items():
+                if not re.match(r"^[a-zA-Z0-9_]+$", arg_name):
+                    raise WorkflowValidationError(f"Invalid argument name for step {step_id}: {arg_name}")
+                await self._validate_expression(expr, step_id, f"args.{arg_name}")
+            if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+
+    async def _validate_custom_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate custom step."""
+        with validation_context(f"Custom step {step_id}"):
+            if not step.get("custom_properties") or not isinstance(step["custom_properties"], dict):
+                raise WorkflowValidationError(f"Missing or invalid custom_properties for step {step_id}")
+            if not re.match(r"^custom_[a-zA-Z0-9_]+$", step["type"]):
+                raise WorkflowValidationError(f"Invalid custom step type for step {step_id}: {step['type']}")
+            if len(json.dumps(step["custom_properties"])) > 10000:
+                raise WorkflowValidationError(f"Custom properties too large for step {step_id}")
+
+    async def _validate_game_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate game-specific steps."""
+        with validation_context(f"Game step {step_id}"):
+            if step["type"] == "game_render":
+                await self._validate_expression(step.get("scene", {}), step_id, "scene")
+                if not step.get("render_target") or not re.match(r"^[a-zA-Z0-9_]+$", step["render_target"]):
+                    raise WorkflowValidationError(f"Missing or invalid render_target for step {step_id}")
+                if "camera" in step:
+                    camera = step["camera"]
+                    if len(camera.get("position", [])) != 3 or not all(isinstance(x, (int, float)) for x in camera.get("position", [])):
+                        raise WorkflowValidationError(f"Invalid camera position for step {step_id}")
+                    if "rotation" in camera and len(camera["rotation"]) != 3:
+                        raise WorkflowValidationError(f"Invalid camera rotation for step {step_id}")
+                    if "fov" in camera and (camera["fov"] < 1 or camera["fov"] > 180):
+                        raise WorkflowValidationError(f"Invalid camera FOV for step {step_id}")
+            elif step["type"] == "game_physics":
+                if not step.get("objects"):
+                    raise WorkflowValidationError(f"Missing objects for step {step_id}")
+                for i, obj in enumerate(step.get("objects", [])):
+                    await self._validate_expression(obj, step_id, f"objects[{i}]")
+                if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                    raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+                simulation = step.get("simulation", {})
+                valid_sim_types = {"rigid_body", "soft_body", "fluid", "particle"}
+                if simulation.get("type") not in valid_sim_types:
+                    raise WorkflowValidationError(f"Invalid simulation type for step {step_id}: {simulation.get('type')}")
+                if "gravity" in simulation and (len(simulation["gravity"]) != 3 or not all(isinstance(x, (int, float)) for x in simulation["gravity"])):
+                    raise WorkflowValidationError(f"Invalid gravity vector for step {step_id}")
+                if "timestep" in simulation and simulation["timestep"] <= 0:
+                    raise WorkflowValidationError(f"Invalid timestep for step {step_id}")
+            elif step["type"] == "game_multiplayer_sync":
+                await self._validate_expression(step.get("state", {}), step_id, "state")
+                valid_sync_types = {"state", "event", "delta"}
+                if step.get("sync_type") not in valid_sync_types:
+                    raise WorkflowValidationError(f"Invalid sync_type for step {step_id}: {step.get('sync_type')}")
+                if not step.get("peers") or not isinstance(step["peers"], list):
+                    raise WorkflowValidationError(f"Missing or invalid peers for step {step_id}")
+                if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                    raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+            elif step["type"] == "game_input":
+                valid_input_types = {"keyboard", "mouse", "controller", "touch", "vr", "ar"}
+                if step.get("input_type") not in valid_input_types:
+                    raise WorkflowValidationError(f"Invalid input_type for step {step_id}: {step.get('input_type')}")
+                if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                    raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+                if not step.get("bindings") or not isinstance(step["bindings"], dict):
+                    raise WorkflowValidationError(f"Missing or invalid bindings for step {step_id}")
+                for binding in step["bindings"]:
+                    if not re.match(r"^[a-zA-Z0-9_]+$", binding):
+                        raise WorkflowValidationError(f"Invalid binding key for step {step_id}: {binding}")
+            elif step["type"] == "game_animation":
+                await self._validate_expression(step.get("target_object", {}), step_id, "target_object")
+                animation = step.get("animation", {})
+                valid_anim_types = {"skeletal", "keyframe", "procedural"}
+                if animation.get("type") not in valid_anim_types:
+                    raise WorkflowValidationError(f"Invalid animation type for step {step_id}: {animation.get('type')}")
+                if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                    raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+                if "duration" in animation and animation["duration"] <= 0:
+                    raise WorkflowValidationError(f"Invalid animation duration for step {step_id}")
+                if "keyframes" in animation and not isinstance(animation["keyframes"], list):
+                    raise WorkflowValidationError(f"Invalid keyframes for step {step_id}")
+
+    async def _validate_script_step(self, step: Dict[str, Any], step_id: str, _: Optional[Set[str]] = None) -> None:
+        """Validate script step with language-specific checks."""
+        with validation_context(f"Script step {step_id}"):
+            if not step.get("script") or not isinstance(step["script"], str):
+                raise WorkflowValidationError(f"Missing or invalid script for step {step_id}")
+            if not step.get("target") or not re.match(r"^[a-zA-Z0-9_]+$", step["target"]):
+                raise WorkflowValidationError(f"Missing or invalid target for step {step_id}")
+            language = step.get("language", "python")
+            valid_languages = {"python", "javascript", "typescript", "lua"}
+            if language not in valid_languages:
+                raise WorkflowValidationError(f"Unsupported script language for step {step_id}: {language}")
+            
+            # Validate script syntax
+            if language == "python":
+                try:
+                    ast.parse(step["script"])
+                except SyntaxError as e:
+                    raise WorkflowValidationError(f"Invalid Python syntax in step {step_id}: {str(e)}")
+            elif language in ["javascript", "typescript"]:
+                try:
+                    esprima.parseScript(step["script"])
+                except esprima.Error as e:
+                    raise WorkflowValidationError(f"Invalid JavaScript/TypeScript syntax in step {step_id}: {str(e)}")
+            elif language == "lua":
+                try:
+                    self.lua_runtime.eval(step["script"])
+                except lupa.LuaError as e:
+                    raise WorkflowValidationError(f"Invalid Lua syntax in step {step_id}: {str(e)}")
+            
+            # Validate sandbox
+            sandbox = step.get("sandbox", {})
+            valid_modules = {
+                "python": {"math", "random", "datetime", "json", "pygame", "numpy"},
+                "javascript": {"mathjs", "lodash"},
+                "typescript": {"mathjs", "lodash"},
+                "lua": set()
+            }
+            for module in sandbox.get("allowed_modules", []):
+                if module not in valid_modules[language]:
+                    raise WorkflowValidationError(f"Invalid module for {language} in step {step_id}: {module}")
+            
+            if sandbox.get("max_execution_time", 5) < 1 or sandbox.get("max_execution_time", 5) > 60:
+                raise WorkflowValidationError(f"Invalid max_execution_time for step {step_id}: {sandbox.get('max_execution_time')}")
+            if sandbox.get("max_memory", 10240) < 1024 or sandbox.get("max_memory", 10240) > 524288:
+                raise WorkflowValidationError(f"Invalid max_memory for step {step_id}: {sandbox.get('max_memory')}")
+            
+            # Validate inputs
+            for key, expr in step.get("inputs", {}).items():
+                if not re.match(r"^[a-zA-Z0-9_]+$", key):
+                    raise WorkflowValidationError(f"Invalid input key for step {step_id}: {key}")
+                await self._validate_expression(expr, step_id, f"inputs.{key}")
+
+    async def _validate_expression(self, expr: Dict[str, Any], step_id: str, expr_path: str) -> None:
+        """Validate expressions recursively."""
+        with validation_context(f"Expression {expr_path} in step {step_id}"):
+            if not isinstance(expr, dict):
+                raise WorkflowValidationError(f"Invalid expression at {expr_path}: must be an object", expr_path)
+            
+            valid_ops = {
+                "get", "value", "add", "subtract", "multiply", "divide", "compare",
+                "not", "and", "or", "concat", "hash", "regex", "map", "filter",
+                "modulo", "pow", "sqrt", "abs"
+            }
+            if not any(op in expr for op in valid_ops):
+                raise WorkflowValidationError(f"Invalid expression at {expr_path}: no valid operation", expr_path)
+            
+            if "get" in expr:
+                if not re.match(r"^[a-zA-Z0-9_\.]+$", expr["get"]):
+                    raise WorkflowValidationError(f"Invalid get path at {expr_path}: {expr['get']}", expr_path)
+                if len(expr["get"].split(".")) > 10:
+                    raise WorkflowValidationError(f"Get path too deep at {expr_path}: {expr['get']}", expr_path)
+            
+            if "value" in expr:
+                if expr["value"] is None and "null" not in expr:
+                    raise WorkflowValidationError(f"Invalid null value at {expr_path}", expr_path)
+                if isinstance(expr["value"], str) and len(expr["value"]) > 10000:
+                    raise WorkflowValidationError(f"Value too long at {expr_path}", expr_path)
+            
+            for op in ["add", "subtract", "multiply", "divide", "and", "or", "concat", "modulo", "pow"]:
+                if op in expr:
+                    if len(expr[op]) < 2:
+                        raise WorkflowValidationError(f"Invalid {op} operation at {expr_path}: requires at least 2 operands", expr_path)
+                    for i, operand in enumerate(expr[op]):
+                        await self._validate_expression(operand, step_id, f"{expr_path}.{op}[{i}]")
+            
+            if "compare" in expr:
+                compare = expr["compare"]
+                valid_compare_ops = {"<", ">", "===", "<=", ">=", "!==", "in", "not in"}
+                if compare.get("op") not in valid_compare_ops:
+                    raise WorkflowValidationError(f"Invalid compare operator at {expr_path}: {compare.get('op')}", expr_path)
+                await self._validate_expression(compare.get("left", {}), step_id, f"{expr_path}.compare.left")
+                await self._validate_expression(compare.get("right", {}), step_id, f"{expr_path}.compare.right")
+            
+            if "not" in expr:
+                await self._validate_expression(expr["not"], step_id, f"{expr_path}.not")
+            
+            if "hash" in expr:
+                valid_hash_algorithms = {"sha256", "sha3", "keccak256", "blake2b", "sha1", "md5"}
+                if expr["hash"].get("algorithm") not in valid_hash_algorithms:
+                    raise WorkflowValidationError(f"Invalid hash algorithm at {expr_path}: {expr['hash'].get('algorithm')}", expr_path)
+                await self._validate_expression(expr["hash"].get("input", {}), step_id, f"{expr_path}.hash.input")
+            
+            if "regex" in expr:
+                if not self._is_valid_regex(expr["regex"].get("pattern", "")):
+                    raise WorkflowValidationError(f"Invalid regex pattern at {expr_path}: {expr['regex'].get('pattern')}", expr_path)
+                await self._validate_expression(expr["regex"].get("input", {}), step_id, f"{expr_path}.regex.input")
+            
+            if "map" in expr:
+                await self._validate_expression(expr["map"].get("collection", {}), step_id, f"{expr_path}.map.collection")
+                await self._validate_expression(expr["map"].get("operation", {}), step_id, f"{expr_path}.map.operation")
+            
+            if "filter" in expr:
+                await self._validate_expression(expr["filter"].get("collection", {}), step_id, f"{expr_path}.filter.collection")
+                await self._validate_expression(expr["filter"].get("condition", {}), step_id, f"{expr_path}.filter.condition")
+            
+            for op in ["sqrt", "abs"]:
+                if op in expr:
+                    await self._validate_expression(expr[op], step_id, f"{expr_path}.{op}")
+
+    async def _validate_game(self, data: Dict[str, Any]) -> None:
+        """Validate game configuration."""
+        with validation_context("Game configuration"):
+            game = data.get("game", {})
+            if game.get("engine") and game["engine"] not in self.supported_game_engines:
+                raise WorkflowValidationError(f"Invalid game engine: {game.get('engine')}")
+            
+            for platform in game.get("platforms", []):
+                if platform not in self.valid_platforms:
+                    raise WorkflowValidationError(f"Invalid platform: {platform}")
+            
+            asset_pipeline = game.get("asset_pipeline", {})
+            for fmt in asset_pipeline.get("formats", []):
+                if fmt not in self.valid_asset_formats:
+                    raise WorkflowValidationError(f"Invalid asset format: {fmt}")
+            if "max_size_mb" in asset_pipeline and asset_pipeline["max_size_mb"] <= 0:
+                raise WorkflowValidationError(f"Invalid max_size_mb: {asset_pipeline.get('max_size_mb')}")
+            
+            if "multiplayer" in game:
+                multiplayer = game["multiplayer"]
+                valid_mp_types = {"p2p", "client-server", "hybrid"}
+                if multiplayer.get("type") not in valid_mp_types:
+                    raise WorkflowValidationError(f"Invalid multiplayer type: {multiplayer.get('type')}")
+                if multiplayer.get("max_players", 1) < 1 or multiplayer.get("max_players", 1) > 1000:
+                    raise WorkflowValidationError(f"Invalid max_players: {multiplayer.get('max_players')}")
+                valid_protocols = {"udp", "tcp", "websocket", "webrtc"}
+                if multiplayer.get("network_protocol") not in valid_protocols:
+                    raise WorkflowValidationError(f"Invalid network_protocol: {multiplayer.get('network_protocol')}")
+                if "latency_ms" in multiplayer and multiplayer["latency_ms"] < 0:
+                    raise WorkflowValidationError(f"Invalid latency_ms: {multiplayer.get('latency_ms')}")
+
+    async def _validate_access_policy(self, data: Dict[str, Any]) -> None:
+        """Validate access policy."""
+        with validation_context("Access policy"):
+            access_policy = data.get("access_policy", {})
+            for role in access_policy.get("roles", []):
+                if not re.match(r"^[a-zA-Z0-9_]+$", role):
+                    raise WorkflowValidationError(f"Invalid role: {role}")
+            for perm in access_policy.get("permissions", []):
+                if not re.match(r"^[a-zA-Z0-9_]+$", perm):
+                    raise WorkflowValidationError(f"Invalid permission: {perm}")
+            valid_policy_engines = {"opa", "casbin", "custom"}
+            if access_policy.get("policy_engine") not in valid_policy_engines:
+                raise WorkflowValidationError(f"Invalid policy_engine: {access_policy.get('policy_engine')}")
+            if access_policy.get("policies") and not isinstance(access_policy["policies"], list):
+                raise WorkflowValidationError("Invalid policies format")
+
+    async def _validate_execution_policy(self, data: Dict[str, Any]) -> None:
+        """Validate execution policy."""
+        with validation_context("Execution policy"):
+            execution_policy = data.get("execution_policy", {})
+            if execution_policy.get("max_runs_per_minute", 1) < 1 or execution_policy.get("max_runs_per_minute", 1) > 1000:
+                raise WorkflowValidationError(f"Invalid max_runs_per_minute: {execution_policy.get('max_runs_per_minute')}")
+            if execution_policy.get("max_concurrent_runs", 1) < 1 or execution_policy.get("max_concurrent_runs", 1) > 100:
+                raise WorkflowValidationError(f"Invalid max_concurrent_runs: {execution_policy.get('max_concurrent_runs')}")
+            valid_priorities = {"low", "medium", "high"}
+            if execution_policy.get("priority") and execution_policy["priority"] not in valid_priorities:
+                raise WorkflowValidationError(f"Invalid priority: {execution_policy.get('priority')}")
+            if "timeout_ms" in execution_policy and execution_policy["timeout_ms"] <= 0:
+                raise WorkflowValidationError(f"Invalid timeout_ms: {execution_policy.get('timeout_ms')}")
+
+    async def _validate_secrets(self, data: Dict[str, Any]) -> None:
+        """Validate secrets configuration."""
+        with validation_context("Secrets"):
+            secrets = data.get("secrets", [])
+            seen_names = set()
+            for secret in secrets:
+                if not secret.get("name") or not re.match(r"^[a-zA-Z0-9_]+$", secret["name"]):
+                    raise WorkflowValidationError(f"Missing or invalid name for secret: {secret.get('name')}")
+                if secret["name"] in seen_names:
+                    raise WorkflowValidationError(f"Duplicate secret name: {secret['name']}")
+                seen_names.add(secret["name"])
+                valid_sources = {"env", "vault", "kms", "secret_manager"}
+                if secret.get("source") not in valid_sources:
+                    raise WorkflowValidationError(f"Invalid source for secret {secret['name']}: {secret.get('source')}")
+                if secret.get("encryption") and secret["encryption"] not in ["aes", "rsa"]:
+                    raise WorkflowValidationError(f"Invalid encryption for secret {secret['name']}: {secret.get('encryption')}")
+
+    async def _validate_invariants(self, data: Dict[str, Any]) -> None:
+        """Validate invariants for formal verification."""
+        with validation_context("Invariants"):
+            for invariant in data.get("invariants", []):
+                await self._validate_expression(invariant.get("condition", {}), "invariant", "condition")
+                if not invariant.get("message") or len(invariant["message"]) > 500:
+                    raise WorkflowValidationError(f"Missing or too long message for invariant")
+                valid_severities = {"error", "warning", "info"}
+                if invariant.get("severity") not in valid_severities:
+                    raise WorkflowValidationError(f"Invalid severity for invariant: {invariant.get('severity')}")
+                valid_verification_tools = {"certora", "scribble", "mythril", "slither"}
+                if invariant.get("verification_tool") and invariant["verification_tool"] not in valid_verification_tools:
+                    raise WorkflowValidationError(f"Invalid verification_tool: {invariant.get('verification_tool')}")
+
+    async def _validate_tests(self, data: Dict[str, Any]) -> None:
+        """Validate test cases."""
+        with validation_context("Tests"):
+            for test in data.get("tests", []):
+                if not test.get("name") or not re.match(r"^[a-zA-Z0-9_]+$", test["name"]):
+                    raise WorkflowValidationError(f"Missing or invalid name for test")
+                valid_test_types = {"example", "property", "fuzz", "unit", "integration"}
+                if test.get("type") not in valid_test_types:
+                    raise WorkflowValidationError(f"Invalid test type: {test.get('type')}")
+                if not test.get("inputs") or not isinstance(test["inputs"], dict):
+                    raise WorkflowValidationError(f"Missing or invalid inputs for test {test['name']}")
+                if not test.get("expected") or not isinstance(test["expected"], dict):
+                    raise WorkflowValidationError(f"Missing or invalid expected for test {test['name']}")
+                if test.get("type") in ["property", "fuzz"]:
+                    for i, prop in enumerate(test.get("properties", [])):
+                        await self._validate_expression(prop, f"test_{test['name']}", f"properties[{i}]")
+                if test.get("timeout_ms", 1000) <= 0:
+                    raise WorkflowValidationError(f"Invalid timeout_ms for test {test['name']}")
+
+    async def _validate_attestation(self, data: Dict[str, Any]) -> None:
+        """Validate cryptographic attestation."""
+        with validation_context("Attestation"):
+            attestation = data.get("attestation", {})
+            if attestation:
+                for signer in attestation.get("signers", []):
+                    if not re.match(r"^0x[a-fA-F0-9]{40}$", signer):
+                        raise WorkflowValidationError(f"Invalid signer address: {signer}")
+                if not re.match(r"^0x[a-fA-F0-9]+$", attestation.get("signature", "")):
+                    raise WorkflowValidationError(f"Invalid signature: {attestation.get('signature')}")
+                if not re.match(r"^0x[a-fA-F0-9]{64}$", attestation.get("hash", "")):
+                    raise WorkflowValidationError(f"Invalid hash: {attestation.get('hash')}")
+
+    async def _validate_history(self, data: Dict[str, Any]) -> None:
+        """Validate change history."""
+        with validation_context("History"):
+            for entry in data.get("history", []):
+                if not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", entry.get("timestamp", "")):
+                    raise WorkflowValidationError(f"Invalid timestamp for history entry: {entry.get('timestamp')}")
+                if not entry.get("author") or len(entry["author"]) > 100:
+                    raise WorkflowValidationError(f"Missing or invalid author for history entry")
+                if not entry.get("change_summary") or len(entry["change_summary"]) > 1000:
+                    raise WorkflowValidationError(f"Missing or too long change_summary for history entry")
+                if entry.get("version") and not re.match(r"^\d+\.\d+\.\d+$", entry["version"]):
+                    raise WorkflowValidationError(f"Invalid version for history entry: {entry.get('version')}")
+
+    async def _validate_resource_estimates(self, data: Dict[str, Any]) -> None:
+        """Validate resource estimates."""
+        with validation_context("Resource estimates"):
+            estimates = data.get("resource_estimates", {})
+            for key in ["cpu", "memory", "storage", "network"]:
+                if estimates.get(key, 0) < 0:
+                    raise WorkflowValidationError(f"Invalid {key} estimate: {estimates.get(key)}")
+                if key == "memory" and estimates.get(key, 0) > 1024 * 1024:
+                    raise WorkflowValidationError(f"Memory estimate too large: {estimates.get(key)}")
+            if estimates.get("execution_time_ms", 1000) <= 0:
+                raise WorkflowValidationError(f"Invalid execution_time_ms: {estimates.get('execution_time_ms')}")
+
+    async def _validate_ui(self, data: Dict[str, Any]) -> None:
+        """Validate global UI configuration."""
+        with validation_context("Global UI"):
+            if "ui" in data:
+                await self._validate_ui_definition(data["ui"], "global.ui")
+
+    async def _validate_ui_definition(self, ui: Dict[str, Any], path: str) -> None:
+        """Validate UI configuration."""
+        with validation_context(f"UI at {path}"):
+            valid_frameworks = {"react", "vue", "svelte", "game", "flutter"}
+            if ui.get("framework") not in valid_frameworks:
+                raise WorkflowValidationError(f"Invalid UI framework at {path}: {ui.get('framework')}")
+            if not ui.get("component") or not re.match(r"^[a-zA-Z0-9_]+$", ui["component"]):
+                raise WorkflowValidationError(f"Missing or invalid component at {path}")
+            if "game_ui" in ui:
+                game_ui = ui["game_ui"]
+                valid_ui_types = {"hud", "menu", "3d", "vr", "ar"}
+                if game_ui.get("type") not in valid_ui_types:
+                    raise WorkflowValidationError(f"Invalid game_ui type at {path}: {game_ui.get('type')}")
+                if "position" in game_ui and (len(game_ui["position"]) != 3 or not all(isinstance(x, (int, float)) for x in game_ui["position"])):
+                    raise WorkflowValidationError(f"Invalid position at {path}")
+                if "rotation" in game_ui and (len(game_ui["rotation"]) != 3 or not all(isinstance(x, (int, float)) for x in game_ui["rotation"])):
+                    raise WorkflowValidationError(f"Invalid rotation at {path}")
+                if "scale" in game_ui and (not isinstance(game_ui["scale"], (int, float)) or game_ui["scale"] <= 0):
+                    raise WorkflowValidationError(f"Invalid scale at {path}")
+            if ui.get("template"):
+                try:
+                    self.jinja_env.from_string(ui["template"]).render()
+                except Exception as e:
+                    raise WorkflowValidationError(f"Invalid Jinja2 template at {path}: {str(e)}")
+
+    async def _validate_subworkflows(self, data: Dict[str, Any]) -> None:
+        """Validate subworkflow references."""
+        with validation_context("Subworkflows"):
+            for uri in data.get("subworkflows", []):
+                if not re.match(r"^(http|https|file)://[a-zA-Z0-9_./-]+$", uri):
+                    raise WorkflowValidationError(f"Invalid subworkflow URI: {uri}")
+                if uri.startswith("http"):
+                    try:
+                        async with self.session.get(uri, timeout=5) as response:
+                            if response.status != 200:
+                                raise WorkflowValidationError(f"Failed to fetch subworkflow: {uri}")
+                            subworkflow = await response.json()
+                            await self._validate_and_initialize(subworkflow)
+                    except Exception as e:
+                        raise WorkflowValidationError(f"Subworkflow validation failed for {uri}: {str(e)}")
+
+    async def _validate_verification_results(self, data: Dict[str, Any]) -> None:
+        """Validate verification results."""
+        with validation_context("Verification results"):
+            for result in data.get("verification_results", []):
+                if not result.get("tool") or not re.match(r"^[a-zA-Z0-9_]+$", result["tool"]):
+                    raise WorkflowValidationError(f"Missing or invalid tool for verification result")
+                if not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", result.get("date", "")):
+                    raise WorkflowValidationError(f"Invalid date for verification result: {result.get('date')}")
+                valid_results = {"success", "failure", "partial"}
+                if result.get("result") not in valid_results:
+                    raise WorkflowValidationError(f"Invalid result: {result.get('result')}")
+                if result.get("issues") and not isinstance(result["issues"], list):
+                    raise WorkflowValidationError(f"Invalid issues format for verification result")
+
+    def _is_valid_regex(self, pattern: str) -> bool:
+        """Check if a regex pattern is valid."""
+        try:
+            re.compile(pattern)
+            return True
+        except re.error:
+            return False
+
+    async def execute(self, inputs: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute the workflow with given inputs and context.
+
+        Args:
+            inputs (Dict[str, Any]): Input data for the workflow.
+            context (Dict[str, Any]): Context data (e.g., game state, blockchain data).
+
+        Returns:
+            Dict[str, Any]: Workflow outputs.
+
+        Raises:
+            WorkflowValidationError: If execution fails due to invalid inputs or runtime errors.
+        """
+        if self.execution_state["running"]:
+            raise WorkflowValidationError("Workflow is already running")
+        
+        async with execution_context(f"Workflow {self.function}"):
+            with execution_duration.labels(function=self.function).time():
+                self.execution_state["running"] = True
+                self.execution_state["last_execution"] = datetime.now().isoformat()
+                
+                try:
+                    # Validate inputs against schema
+                    for key, spec in self.schema_data.get("inputs", {}).items():
+                        if key not in inputs and spec.get("constraints", {}).get("required"):
+                            raise WorkflowValidationError(f"Missing required input: {key}")
+                        if key in inputs:
+                            await self._validate_input(inputs[key], spec, f"input.{key}")
+
+                    state = {
+                        "inputs": inputs,
+                        "context": context,
+                        "outputs": {},
+                        "events": [],
+                        "audit_logs": [],
+                        "game_state": {},
+                        "quantum_state": None,
+                        "blockchain_state": {},
+                        "current_role": context.get("role", "default"),
+                        "iteration_count": 0,
+                        "execution_start": time.time(),
+                        "variables": {}  # For storing intermediate variables
+                    }
+
+                    # Initialize game-related resources
+                    if any(step["type"].startswith("game_") for step in self.steps):
+                        self._init_pygame()
+
+                    # Execute steps
+                    for step in self.steps:
+                        result = await self._execute_step(step, state)
+                        if result is not None:  # Handle return steps
+                            return result
+
+                    # Validate outputs against schema
+                    for key, spec in self.schema_data.get("outputs", {}).items():
+                        if key not in state["outputs"] and spec.get("constraints", {}).get("required"):
+                            raise WorkflowValidationError(f"Missing required output: {key}")
+                        if key in state["outputs"]:
+                            await self._validate_output(state["outputs"][key], spec, f"output.{key}")
+
+                    return state["outputs"]
+
+                except Exception as e:
+                    logger.error(f"Workflow execution failed: {str(e)}")
+                    raise WorkflowValidationError(f"Workflow execution failed: {str(e)}")
+                finally:
+                    self.execution_state["running"] = False
+                    resource_usage.labels(resource_type="memory").set(sys.getsizeof(state))
+
+    async def _validate_input(self, value: Any, spec: Dict[str, Any], path: str) -> None:
+        """Validate input value against schema specification."""
+        if spec["type"] == "string":
+            if not isinstance(value, str):
+                raise WorkflowValidationError(f"Invalid type for {path}: expected string")
+            if "constraints" in spec:
+                if "minLength" in spec["constraints"] and len(value) < spec["constraints"]["minLength"]:
+                    raise WorkflowValidationError(f"String too short for {path}")
+                if "maxLength" in spec["constraints"] and len(value) > spec["constraints"]["maxLength"]:
+                    raise WorkflowValidationError(f"String too long for {path}")
+                if "pattern" in spec["constraints"] and not re.match(spec["constraints"]["pattern"], value):
+                    raise WorkflowValidationError(f"String does not match pattern for {path}")
+        elif spec["type"] == "integer":
+            if not isinstance(value, int):
+                raise WorkflowValidationError(f"Invalid type for {path}: expected integer")
+            if "constraints" in spec:
+                if "minimum" in spec["constraints"] and value < spec["constraints"]["minimum"]:
+                    raise WorkflowValidationError(f"Value too small for {path}")
+                if "maximum" in spec["constraints"] and value > spec["constraints"]["maximum"]:
+                    raise WorkflowValidationError(f"Value too large for {path}")
+        elif spec["type"] == "object":
+            if not isinstance(value, dict):
+                raise WorkflowValidationError(f"Invalid type for {path}: expected object")
+
+    async def _validate_output(self, value: Any, spec: Dict[str, Any], path: str) -> None:
+        """Validate output value against schema specification."""
+        await self._validate_input(value, spec, path)
+
+    def _parse_timeout(self, duration: str) -> float:
+        """Parse timeout string like '30s', '2m', '1h' to seconds (float)."""
+        match = re.match(r"^(\d+)([smh])$", duration)
+        if not match:
+            return 30.0  # default
+        value, unit = match.groups()
+        value = int(value)
+        if unit == "s":
+            return value
+        elif unit == "m":
+            return value * 60
+        elif unit == "h":
+            return value * 3600
+        return 30.0
+
+    async def _evaluate_expression(self, expr: Dict[str, Any], state: Dict[str, Any]) -> Any:
+        """Evaluate an expression and return its value."""
+        async def get_value(path: str) -> Any:
+            parts = path.split(".")
+            current = state
+            for part in parts:
+                if isinstance(current, dict) and part in current:
+                    current = current[part]
+                elif part in state["variables"]:
+                    current = state["variables"][part]
+                else:
+                    raise WorkflowValidationError(f"Invalid path in expression: {path}")
+            return current
+
+        if "value" in expr:
+            return expr["value"]
+        elif "get" in expr:
+            return await get_value(expr["get"])
+        elif "add" in expr:
+            values = [await self._evaluate_expression(op, state) for op in expr["add"]]
+            if all(isinstance(v, (int, float)) for v in values):
+                return sum

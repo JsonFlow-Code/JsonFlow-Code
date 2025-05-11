@@ -1,1049 +1,448 @@
 import json
 import logging
-from jsonschema import validate, ValidationError as SchemaValidationError
+import time
+from typing import Any, Dict, List, Optional
+from jsonschema import validate, ValidationError
+from restrictedpython import compile_restricted, safe_globals, utility_builtins
+import asyncio
+import platform
+import resource
+import signal
+import sys
+from contextlib import contextmanager
 
-# Load the full JSONFlow schema (from previous response)
-SCHEMA = {
-    "$schema": "http://json-schema.org/draft-07/schema#",
-    "title": "JSONFlow Ultimate Workflow Schema",
-    "description": "A groundbreaking DSL for defining workflows with blockchain, AI, quantum, UI, and game development integration, designed for accessibility and production readiness.",
-    "type": "object",
-    "required": ["function", "schema", "steps"],
-    "properties": {
-        "function": {
-            "type": "string",
-            "description": "Unique identifier for the workflow, matching Solidity function naming conventions.",
-            "minLength": 1,
-            "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$"
-        },
-        "metadata": {
-            "type": "object",
-            "properties": {
-                "schema_version": {"type": "string", "description": "Version of the JSONFlow schema (e.g., '1.1.0')."},
-                "version": {"type": "string", "description": "Workflow version."},
-                "author": {"type": "string"},
-                "description": {"type": "string"},
-                "created": {"type": "string", "format": "date-time"},
-                "updated": {"type": "string", "format": "date-time"},
-                "tags": {"type": "array", "items": {"type": "string"}},
-                "mermaid": {"type": "string", "description": "Mermaid diagram for workflow visualization."},
-                "target_languages": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": ["solidity", "cairo", "rust", "python", "javascript", "go", "typescript", "java", "kotlin"]},
-                    "description": "Supported output languages for code generation."
-                },
-                "game_engines": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": ["unity", "unreal", "godot", "custom"]},
-                    "description": "Supported game engines for code generation."
-                },
-                "dependencies": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "object",
-                        "properties": {
-                            "version": {"type": "string"},
-                            "hash": {"type": "string"},
-                            "type": {"type": "string", "enum": ["library", "game_library", "asset"]}
-                        },
-                        "required": ["version", "type"],
-                        "additionalProperties": false
-                    },
-                    "description": "External libraries, game libraries, or assets with version, hash, and type for integrity."
-                }
-            },
-            "required": ["schema_version"],
-            "additionalProperties": false,
-            "description": "Metadata with restricted keys for security."
-        },
-        "ui": {
-            "$ref": "#/$defs/ui",
-            "description": "React-specific UI configuration for the entire workflow."
-        },
-        "access_policy": {
-            "type": "object",
-            "properties": {
-                "roles": {"type": "array", "items": {"type": "string"}, "description": "Roles allowed to execute the workflow."},
-                "permissions": {"type": "array", "items": {"type": "string"}, "description": "Permissions required for execution."}
-            },
-            "description": "Workflow-level access control policy."
-        },
-        "game": {
-            "type": "object",
-            "description": "Game development configuration for the workflow.",
-            "properties": {
-                "engine": {
-                    "type": "string",
-                    "enum": ["unity", "unreal", "godot", "custom"],
-                    "description": "Target game engine for the workflow."
-                },
-                "platforms": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": ["pc", "console", "mobile", "web", "vr"]},
-                    "description": "Target platforms for the game."
-                },
-                "asset_pipeline": {
-                    "type": "object",
-                    "properties": {
-                        "formats": {
-                            "type": "array",
-                            "items": {"type": "string", "enum": ["fbx", "gltf", "png", "wav", "mp3"]},
-                            "description": "Supported asset formats."
-                        },
-                        "preprocessors": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Asset preprocessing tools or scripts."
-                        }
-                    },
-                    "additionalProperties": false
-                },
-                "multiplayer": {
-                    "type": "object",
-                    "properties": {
-                        "type": {"type": "string", "enum": ["p2p", "client-server", "hybrid"]},
-                        "max_players": {"type": "integer", "minimum": 1},
-                        "network_protocol": {"type": "string", "enum": ["udp", "tcp", "websocket"]}
-                    },
-                    "additionalProperties": false
-                }
-            },
-            "additionalProperties": false
-        },
-        "schema": {
-            "type": "object",
-            "required": ["inputs", "context", "outputs"],
-            "properties": {
-                "inputs": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "object",
-                        "required": ["type"],
-                        "properties": {
-                            "type": {"type": "string", "enum": ["string", "integer", "number", "boolean", "object", "array", "null"]},
-                            "default": {"anyOf": [{"type": "string"}, {"type": "integer"}, {"type": "number"}, {"type": "boolean"}, {"type": "object"}, {"type": "array"}, {"type": "null"}]},
-                            "description": {"type": "string"},
-                            "nl_noun": {
-                                "oneOf": [
-                                    {"type": "string"},
-                                    {"type": "object", "additionalProperties": {"type": "string"}}
-                                ],
-                                "description": "Natural language noun (e.g., 'User'). Supports localization."
-                            },
-                            "nl_description": {
-                                "oneOf": [
-                                    {"type": "string"},
-                                    {"type": "object", "additionalProperties": {"type": "string"}}
-                                ],
-                                "description": "Natural language explanation. Supports localization."
-                            },
-                            "constraints": {
-                                "type": "object",
-                                "properties": {
-                                    "minLength": {"type": "integer"},
-                                    "maxLength": {"type": "integer"},
-                                    "pattern": {"type": "string"},
-                                    "minimum": {"type": "number"},
-                                    "maximum": {"type": "number"},
-                                    "enum": {"type": "array", "items": {"type": ["string", "number", "boolean"]}}
-                                }
-                            },
-                            "ui": {
-                                "$ref": "#/$defs/ui",
-                                "description": "React or game-specific UI configuration for this input."
-                            }
-                        },
-                        "additionalProperties": false
-                    }
-                },
-                "context": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "object",
-                        "required": ["type"],
-                        "properties": {
-                            "type": {"type": "string", "enum": ["string", "integer", "number", "boolean", "object", "array", "null"]},
-                            "nl_noun": {
-                                "oneOf": [
-                                    {"type": "string"},
-                                    {"type": "object", "additionalProperties": {"type": "string"}}
-                                ]
-                            },
-                            "nl_description": {
-                                "oneOf": [
-                                    {"type": "string"},
-                                    {"type": "object", "additionalProperties": {"type": "string"}}
-                                ]
-                            },
-                            "source": {"type": "string", "enum": ["env", "config", "blockchain", "external_api", "game_state", "player_input"]}
-                        },
-                        "additionalProperties": false
-                    }
-                },
-                "outputs": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "object",
-                        "required": ["type"],
-                        "properties": {
-                            "type": {"type": "string", "enum": ["string", "integer", "number", "boolean", "object", "array", "null", "game_state", "render_output", "physics_state"]},
-                            "description": {"type": "string"},
-                            "nl_noun": {
-                                "oneOf": [
-                                    {"type": "string"},
-                                    {"type": "object", "additionalProperties": {"type": "string"}}
-                                ]
-                            },
-                            "nl_description": {
-                                "oneOf": [
-                                    {"type": "string"},
-                                    {"type": "object", "additionalProperties": {"type": "string"}}
-                                ]
-                            },
-                            "ui": {
-                                "$ref": "#/$defs/ui",
-                                "description": "React or game-specific UI configuration for this output."
-                            }
-                        },
-                        "additionalProperties": false
-                    }
-                }
-            },
-            "additionalProperties": false
-        },
-        "context": {
-            "type": "object",
-            "default": {},
-            "additionalProperties": false,
-            "description": "Runtime context data, restricted for security."
-        },
-        "invariants": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["condition", "message"],
-                "properties": {
-                    "condition": {"$ref": "#/$defs/expr"},
-                    "message": {"type": "string"},
-                    "severity": {"type": "string", "enum": ["error", "warning", "info"]},
-                    "verification_tool": {"type": "string", "enum": ["certora", "scribble"], "description": "Tool for formal verification."}
-                }
-            },
-            "description": "Workflow-level invariants for formal verification, with tool integration."
-        },
-        "tests": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["name", "type"],
-                "properties": {
-                    "name": {"type": "string"},
-                    "type": {"type": "string", "enum": ["example", "property", "fuzz"], "description": "Test type: example-based, property-based, or fuzz testing."},
-                    "inputs": {"type": "object", "description": "Input values for the test."},
-                    "expected": {"type": "object", "description": "Expected output values."},
-                    "context": {"type": "object", "description": "Context for the test."},
-                    "description": {"type": "string"},
-                    "properties": {
-                        "type": "array",
-                        "items": {"$ref": "#/$defs/expr"},
-                        "description": "Properties to verify for property-based or fuzz testing."
-                    }
-                }
-            },
-            "description": "Test cases for example-based, property-based, or fuzz testing."
-        },
-        "steps": {
-            "type": "array",
-            "items": {"$ref": "#/$defs/step"},
-            "minItems": 1
-        },
-        "attestation": {
-            "type": "object",
-            "properties": {
-                "signers": {"type": "array", "items": {"type": "string"}},
-                "signature": {"type": "string"},
-                "hash": {"type": "string"}
-            },
-            "additionalProperties": false,
-            "description": "Workflow attestation for authenticity and integrity."
-        },
-        "history": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "timestamp": {"type": "string", "format": "date-time"},
-                    "author": {"type": "string"},
-                    "change_summary": {"type": "string"},
-                    "diff": {"type": "string"}
-                },
-                "required": ["timestamp", "author", "change_summary"],
-                "additionalProperties": false
-            },
-            "description": "Audit trail of workflow revisions."
-        },
-        "execution_policy": {
-            "type": "object",
-            "properties": {
-                "max_runs_per_minute": {"type": "integer", "minimum": 1},
-                "max_concurrent_runs": {"type": "integer", "minimum": 1}
-            },
-            "additionalProperties": false,
-            "description": "Rate limiting and execution policies."
-        },
-        "secrets": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "source": {"type": "string", "enum": ["env", "vault", "other"]}
-                },
-                "required": ["name"],
-                "additionalProperties": false
-            },
-            "description": "References to secrets used in the workflow."
-        },
-        "subworkflows": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "List of subworkflow IDs or URIs."
-        },
-        "verification_results": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "tool": {"type": "string"},
-                    "date": {"type": "string", "format": "date"},
-                    "result": {"type": "string", "enum": ["success", "failure", "partial"]},
-                    "properties_verified": {"type": "array", "items": {"type": "string"}}
-                },
-                "required": ["tool", "date", "result"],
-                "additionalProperties": false
-            },
-            "description": "Results of formal verification."
-        },
-        "resource_estimates": {
-            "type": "object",
-            "additionalProperties": {"type": "number"},
-            "description": "Estimated resource usage for the workflow."
-        }
-    },
-    "additionalProperties": false,
-    "$defs": {
-        "ui": {
-            "type": "object",
-            "properties": {
-                "component": {
-                    "type": "string",
-                    "description": "React or game-specific component name (e.g., 'TextField', 'HUD', '3DCanvas')."
-                },
-                "props": {
-                    "type": "object",
-                    "additionalProperties": true,
-                    "description": "Props for the component, including game-specific props like position or rotation."
-                },
-                "css": {
-                    "type": "object",
-                    "properties": {
-                        "className": {"type": "string", "description": "CSS class name for styling."},
-                        "style": {"type": "object", "additionalProperties": true, "description": "Inline CSS or 3D transform styles."}
-                    },
-                    "additionalProperties": false
-                },
-                "game_ui": {
-                    "type": "object",
-                    "properties": {
-                        "type": {"type": "string", "enum": ["hud", "menu", "3d", "vr"]},
-                        "position": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 3},
-                        "rotation": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
-                        "scale": {"type": "number", "minimum": 0}
-                    },
-                    "additionalProperties": false,
-                    "description": "Game-specific UI properties."
-                }
-            },
-            "additionalProperties": true,
-            "description": "React or game-specific UI configuration."
-        },
-        "common_step_properties": {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string", "description": "Unique identifier for the step."},
-                "on_error": {"$ref": "#/$defs/on_error"},
-                "nl_phrase": {
-                    "oneOf": [
-                        {"type": "string"},
-                        {"type": "object", "additionalProperties": {"type": "string"}}
-                    ],
-                    "description": "Natural language description of the step. Supports localization."
-                },
-                "access_control": {
-                    "type": "object",
-                    "properties": {
-                        "roles": {"type": "array", "items": {"type": "string"}},
-                        "permissions": {"type": "array", "items": {"type": "string"}}
-                    }
-                },
-                "timeout": {
-                    "type": "object",
-                    "properties": {
-                        "duration": {"type": "string", "description": "Duration (e.g., '30s', '1m')."},
-                        "action": {"type": "string", "enum": ["skip", "retry", "fail"]},
-                        "max_retries": {"type": "integer", "minimum": 0}
-                    }
-                },
-                "ui": {"$ref": "#/$defs/ui"},
-                "resource_estimates": {
-                    "type": "object",
-                    "additionalProperties": {"type": "number"},
-                    "description": "Estimated resource usage for this step."
-                }
-            }
-        },
-        "step": {
-            "oneOf": [
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "set"},
-                                "target": {"type": "string"},
-                                "value": {"$ref": "#/$defs/expr"}
-                            },
-                            "required": ["type", "target", "value"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "if"},
-                                "condition": {"$ref": "#/$defs/expr"},
-                                "then": {"type": "array", "items": {"$ref": "#/$defs/step"}, "minItems": 1},
-                                "else": {"type": "array", "items": {"$ref": "#/$defs/step"}, "minItems": 1}
-                            },
-                            "required": ["type", "condition", "then"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "return"},
-                                "value": {"$ref": "#/$defs/expr"}
-                            },
-                            "required": ["type", "value"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "call"},
-                                "function": {"type": "string"},
-                                "args": {"type": "object", "additionalProperties": {"$ref": "#/$defs/expr"}},
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "function", "args", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "try"},
-                                "body": {"type": "array", "items": {"$ref": "#/$defs/step"}, "minItems": 1},
-                                "catch": {
-                                    "type": "object",
-                                    "properties": {
-                                        "error_var": {"type": "string"},
-                                        "body": {"type": "array", "items": {"$ref": "#/$defs/step"}, "minItems": 1}
-                                    }
-                                },
-                                "finally": {"type": "array", "items": {"$ref": "#/$defs/step"}, "minItems": 1}
-                            },
-                            "required": ["type", "body"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "while"},
-                                "condition": {"$ref": "#/$defs/expr"},
-                                "body": {"type": "array", "items": {"$ref": "#/$defs/step"}, "minItems": 1}
-                            },
-                            "required": ["type", "condition", "body"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "foreach"},
-                                "collection": {"$ref": "#/$defs/expr"},
-                                "iterator": {"type": "string"},
-                                "body": {"type": "array", "items": {"$ref": "#/$defs/step"}, "minItems": 1}
-                            },
-                            "required": ["type", "collection", "iterator", "body"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "parallel"},
-                                "branches": {"type": "array", "items": {"type": "array", "items": {"$ref": "#/$defs/step"}, "minItems": 1}, "minItems": 1}
-                            },
-                            "required": ["type", "branches"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf" : [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "assert"},
-                                "condition": {"$ref": "#/$defs/expr"},
-                                "message": {"type": "string"}
-                            },
-                            "required": ["type", "condition"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "event"},
-                                "name": {"type": "string"},
-                                "params": {"type": "object", "additionalProperties": {"$ref": "#/$defs/expr"}}
-                            },
-                            "required": ["type", "name", "params"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "require_role"},
-                                "role": {"type": "string"}
-                            },
-                            "required": ["type", "role"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "ai_infer"},
-                                "model": {"type": "string"},
-                                "input": {"$ref": "#/$defs/expr"},
-                                "parameters": {"type": "object", "additionalProperties": true},
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "model", "input", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "ai_train"},
-                                "model": {"type": "string"},
-                                "data": {"$ref": "#/$defs/expr"},
-                                "parameters": {"type": "object", "additionalProperties": true},
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "model", "data", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "ai_classify"},
-                                "model": {"type": "string"},
-                                "input": {"$ref": "#/$defs/expr"},
-                                "parameters": {"type": "object", "additionalProperties": true},
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "model", "input", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "ai_embed"},
-                                "model": {"type": "string"},
-                                "input": {"$ref": "#/$defs/expr"},
-                                "parameters": {"type": "object", "additionalProperties": true},
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "model", "input", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "ai_explain"},
-                                "model": {"type": "string"},
-                                "input": {"$ref": "#/$defs/expr"},
-                                "parameters": {"type": "object", "additionalProperties": true},
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "model", "input", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "quantum_circuit"},
-                                "gates": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "required": ["gate", "target"],
-                                        "properties": {
-                                            "gate": {"type": "string", "enum": ["H", "X", "Y", "Z", "CNOT", "T", "S", "RX", "RY", "RZ"]},
-                                            "target": {"type": "integer", "minimum": 0},
-                                            "control": {"type": "integer", "minimum": 0},
-                                            "parameters": {"type": "object", "additionalProperties": {"type": "number"}}
-                                        },
-                                        "additionalProperties": false
-                                    },
-                                    "minItems": 1
-                                },
-                                "qubits": {"type": "integer", "minimum": 1},
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "gates", "qubits", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "quantum_measure"},
-                                "circuit": {"$ref": "#/$defs/expr"},
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "circuit", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "quantum_algorithm"},
-                                "algorithm": {"type": "string", "enum": ["grover", "shor", "qft"]},
-                                "parameters": {"type": "object", "additionalProperties": true},
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "algorithm", "parameters", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "blockchain_operation"},
-                                "chain": {
-                                    "anyOf": [
-                                        {"type": "string", "enum": ["ethereum", "solana", "starknet", "cosmos", "polkadot"]},
-                                        {"type": "string", "pattern": "^[a-zA-Z0-9_]+$"}
-                                    ]
-                                },
-                                "action": {
-                                    "anyOf": [
-                                        {"type": "string", "enum": ["transfer", "mint", "burn", "governance", "bridge", "flash_loan", "swap", "liquidate"]},
-                                        {"type": "string", "pattern": "^[a-zA-Z0-9_]+$"}
-                                    ]
-                                },
-                                "params": {"type": "object", "additionalProperties": true},
-                                "gas": {
-                                    "type": "object",
-                                    "properties": {
-                                        "estimate": {"type": "boolean"},
-                                        "optimize": {"type": "boolean"},
-                                        "limit": {"type": "integer"},
-                                        "max_fee_per_gas": {"type": "integer"},
-                                        "priority_fee_per_gas": {"type": "integer"}
-                                    }
-                                },
-                                "replay_protection": {
-                                    "type": "object",
-                                    "properties": {
-                                        "nonce": {"type": "string"},
-                                        "idempotency_key": {"type": "string"}
-                                    }
-                                },
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "chain", "action", "params", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "crypto_sign"},
-                                "algorithm": {"type": "string", "enum": ["ecdsa", "ed25519", "rsa"]},
-                                "data": {"$ref": "#/$defs/expr"},
-                                "key": {"$ref": "#/$defs/expr"},
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "algorithm", "data", "key", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "crypto_verify"},
-                                "algorithm": {"type": "string", "enum": ["ecdsa", "ed25519", "rsa"]},
-                                "data": {"$ref": "#/$defs/expr"},
-                                "signature": {"$ref": "#/$defs/expr"},
-                                "key": {"$ref": "#/$defs/expr"},
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "algorithm", "data", "signature", "key", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "regex_match"},
-                                "pattern": {"type": "string"},
-                                "input": {"$ref": "#/$defs/expr"},
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "pattern", "input", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "audit_log"},
-                                "message": {"type": "string"},
-                                "metadata": {"type": "object", "additionalProperties": true}
-                            },
-                            "required": ["type", "message"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "call_workflow"},
-                                "workflow": {"type": "string"},
-                                "args": {"type": "object", "additionalProperties": {"$ref": "#/$defs/expr"}},
-                                "target": {"type": "string"}
-                            },
-                            "required": ["type", "workflow", "args", "target"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"type": "string", "pattern": "^custom_[a-zA-Z0-9_]+$"},
-                                "custom_properties": {"type": "object"}
-                            },
-                            "required": ["type", "custom_properties"]
-                        }
-                    ],
-                    "additionalProperties": false
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "game_render"},
-                                "scene": {"$ref": "#/$defs/expr", "description": "Scene data or reference to render."},
-                                "camera": {
-                                    "type": "object",
-                                    "properties": {
-                                        "position": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
-                                        "rotation": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
-                                        "fov": {"type": "number"}
-                                    },
-                                    "required": ["position"],
-                                    "additionalProperties": false
-                                },
-                                "render_target": {"type": "string", "description": "Target variable for rendered output."}
-                            },
-                            "required": ["type", "scene", "render_target"],
-                            "additionalProperties": false
-                        }
-                    ]
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "game_physics"},
-                                "objects": {"type": "array", "items": {"$ref": "#/$defs/expr"}, "description": "Game objects with physics properties."},
-                                "simulation": {
-                                    "type": "object",
-                                    "properties": {
-                                        "type": {"type": "string", "enum": ["rigid_body", "soft_body", "fluid"]},
-                                        "gravity": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3},
-                                        "time_step": {"type": "number", "minimum": 0}
-                                    },
-                                    "required": ["type"],
-                                    "additionalProperties": false
-                                },
-                                "target": {"type": "string", "description": "Target variable for physics simulation results."}
-                            },
-                            "required": ["type", "objects", "simulation", "target"],
-                            "additionalProperties": false
-                        }
-                    ]
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "game_multiplayer_sync"},
-                                "state": {"$ref": "#/$defs/expr", "description": "Game state to synchronize."},
-                                "sync_type": {"type": "string", "enum": ["state", "event", "delta"]},
-                                "peers": {"type": "array", "items": {"type": "string"}, "description": "Peer IDs or addresses."},
-                                "target": {"type": "string", "description": "Target variable for sync results."}
-                            },
-                            "required": ["type", "state", "sync_type", "target"],
-                            "additionalProperties": false
-                        }
-                    ]
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "game_input"},
-                                "input_type": {"type": "string", "enum": ["keyboard", "mouse", "controller", "touch", "vr"]},
-                                "bindings": {
-                                    "type": "object",
-                                    "additionalProperties": {"type": "string"},
-                                    "description": "Input action mappings (e.g., 'jump': 'space')."
-                                },
-                                "target": {"type": "string", "description": "Target variable for input data."}
-                            },
-                            "required": ["type", "input_type", "target"],
-                            "additionalProperties": false
-                        }
-                    ]
-                },
-                {
-                    "allOf": [
-                        {"$ref": "#/$defs/common_step_properties"},
-                        {
-                            "properties": {
-                                "type": {"const": "game_animation"},
-                                "target_object": {"$ref": "#/$defs/expr", "description": "Object to animate."},
-                                "animation": {
-                                    "type": "object",
-                                    "properties": {
-                                        "type": {"type": "string", "enum": ["skeletal", "keyframe", "procedural"]},
-                                        "parameters": {"type": "object", "additionalProperties": true},
-                                        "duration": {"type": "number", "minimum": 0}
-                                    },
-                                    "required": ["type"],
-                                    "additionalProperties": false
-                                },
-                                "target": {"type": "string", "description": "Target variable for animation results."}
-                            },
-                            "required": ["type", "target_object", "animation", "target"],
-                            "additionalProperties": false
-                        }
-                    ]
-                }
-            ]
-        },
-        "expr": {
-            "type": "object",
-            "properties": {
-                "get": {"type": "string", "pattern": "^[a-zA-Z0-9_\\.]+$", "description": "Variable name, restricted to safe characters."},
-                "value": {"type": ["string", "number", "boolean", "object", "array", "null"]},
-                "add": {"type": "array", "items": {"$ref": "#/$defs/valueOrExpr"}, "minItems": 2},
-                "subtract": {"type": "array", "items": {"$ref": "#/$defs/valueOrExpr"}, "minItems": 2},
-                "multiply": {"type": "array", "items": {"$ref": "#/$defs/valueOrExpr"}, "minItems": 2},
-                "divide": {"type": "array", "items": {"$ref": "#/$defs/valueOrExpr"}, "minItems": 2},
-                "compare": {
-                    "type": "object",
-                    "required": ["left", "op", "right"],
-                    "properties": {
-                        "left": {"$ref": "#/$defs/valueOrExpr"},
-                        "op": {"type": "string", "enum": ["<", ">", "===", "<=", ">=", "!=="]},
-                        "right": {"$ref": "#/$defs/valueOrExpr"}
-                    },
-                    "additionalProperties": false
-                },
-                "not": {"$ref": "#/$defs/expr"},
-                "and": {"type": "array", "items": {"$ref": "#/$defs/expr"}, "minItems": 2},
-                "or": {"type": "array", "items": {"$ref": "#/$defs/expr"}, "minItems": 2},
-                "concat": {"type": "array", "items": {"$ref": "#/$defs/valueOrExpr"}, "minItems": 2},
-                "hash": {
-                    "type": "object",
-                    "required": ["algorithm", "input"],
-                    "properties": {
-                        "algorithm": {"type": "string", "enum": ["sha256", "sha3", "keccak256"]},
-                        "input": {"$ref": "#/$defs/valueOrExpr"}
-                    },
-                    "additionalProperties": false
-                },
-                "regex": {
-                    "type": "object",
-                    "required": ["pattern", "input"],
-                    "properties": {
-                        "pattern": {"type": "string"},
-                        "input": {"$ref": "#/$defs/valueOrExpr"}
-                    },
-                    "additionalProperties": false
-                }
-            },
-            "additionalProperties": false,
-            "description": "Expression with validation to prevent injection."
-        },
-        "valueOrExpr": {
-            "anyOf": [
-                {"type": "string"},
-                {"type": "number"},
-                {"type": "boolean"},
-                {"type": "object"},
-                {"type": "array"},
-                {"type": "null"},
-                {"$ref": "#/$defs/expr"}
-            ]
-        },
-        "on_error": {
-            "type": "object",
-            "properties": {
-                "step_id": {"type": "string", "description": "ID of step to execute on error, validated to prevent cycles."},
-                "body": {"type": "array", "items": {"$ref": "#/$defs/step"}, "minItems": 1}
-            },
-            "description": "Error handling with cycle prevention."
-        }
-    }
-}
-
+# Setup logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def parse_workflow(file_path: str) -> 'Workflow':
-    """
-    Parse a workflow JSON file and validate it against the JSONFlow schema.
-    
-    Args:
-        file_path (str): Path to the workflow JSON file.
-    
-    Returns:
-        Workflow: Parsed and validated workflow object.
-    
-    Raises:
-        ValueError: If the workflow is invalid or fails schema validation.
-        FileNotFoundError: If the file does not exist.
-    """
-    logger.info(f"Parsing workflow file: {file_path}")
-    try:
-        with open(file_path, 'r') as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        logger.error(f"Workflow file not found: {file_path}")
-        raise FileNotFoundError(f"Workflow file not found: {file_path}")
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON in workflow file: {str(e)}")
-        raise ValueError(f"Invalid JSON in workflow file: {str(e)}")
+class TimeoutException(Exception):
+    pass
 
+@contextmanager
+def time_limit(seconds: int):
+    """Context manager to enforce execution time limit."""
+    def signal_handler(signum, frame):
+        raise TimeoutException(f"Execution timed out after {seconds} seconds")
+    
+    signal.signal(signal.SIGALRM, signal_handler)
+    signal.alarm(seconds)
     try:
-        validate(instance=data, schema=SCHEMA)
-        logger.debug("Workflow schema validation passed")
-    except SchemaValidationError as e:
-        logger.error(f"Schema validation failed: {str(e)}")
-        raise ValueError(f"Invalid workflow: {str(e)}")
+        yield
+    finally:
+        signal.alarm(0)
 
-    return Workflow(data)
+@contextmanager
+def memory_limit(kb: int):
+    """Context manager to enforce memory limit in KB."""
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (kb * 1024, kb * 1024))
+        yield
+    finally:
+        resource.setrlimit(resource.RLIMIT_AS, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+
+class JSONFlowParser:
+    def __init__(self, schema: Dict[str, Any]):
+        self.schema = schema
+        self.context: Dict[str, Any] = {}
+        self.logger = logger
+
+    def validate_workflow(self, workflow: Dict[str, Any]) -> None:
+        """Validate workflow against the schema."""
+        try:
+            validate(instance=workflow, schema=self.schema)
+            self.logger.info("Workflow validation successful")
+        except ValidationError as e:
+            self.logger.error(f"Workflow validation failed: {str(e)}")
+            raise
+
+    def evaluate_expr(self, expr: Dict[str, Any], context: Dict[str, Any]) -> Any:
+        """Evaluate an expression in the given context."""
+        if "get" in expr:
+            keys = expr["get"].split(".")
+            value = context
+            for key in keys:
+                value = value.get(key)
+                if value is None:
+                    raise ValueError(f"Invalid context key: {expr['get']}")
+            return value
+        elif "value" in expr:
+            return expr["value"]
+        elif "add" in expr:
+            return sum(self.evaluate_expr(item, context) for item in expr["add"])
+        elif "subtract" in expr:
+            result = self.evaluate_expr(expr["subtract"][0], context)
+            for item in expr["subtract"][1:]:
+                result -= self.evaluate_expr(item, context)
+            return result
+        elif "multiply" in expr:
+            result = 1
+            for item in expr["multiply"]:
+                result *= self.evaluate_expr(item, context)
+            return result
+        elif "divide" in expr:
+            result = self.evaluate_expr(expr["divide"][0], context)
+            for item in expr["divide"][1:]:
+                value = self.evaluate_expr(item, context)
+                if value == 0:
+                    raise ValueError("Division by zero")
+                result /= value
+            return result
+        elif "compare" in expr:
+            left = self.evaluate_expr(expr["compare"]["left"], context)
+            right = self.evaluate_expr(expr["compare"]["right"], context)
+            op = expr["compare"]["op"]
+            if op == "===":
+                return left == right
+            elif op == "<":
+                return left < right
+            elif op == ">":
+                return left > right
+            elif op == "<=":
+                return left <= right
+            elif op == ">=":
+                return left >= right
+            elif op == "!==":
+                return left != right
+        elif "not" in expr:
+            return not self.evaluate_expr(expr["not"], context)
+        elif "and" in expr:
+            return all(self.evaluate_expr(item, context) for item in expr["and"])
+        elif "or" in expr:
+            return any(self.evaluate_expr(item, context) for item in expr["or"])
+        elif "concat" in expr:
+            return "".join(str(self.evaluate_expr(item, context)) for item in expr["concat"])
+        else:
+            raise ValueError(f"Unsupported expression: {expr}")
+
+    def execute_script(self, script: str, inputs: Dict[str, Any], sandbox: Dict[str, Any], context: Dict[str, Any]) -> Any:
+        """Execute a Python script in a sandboxed environment."""
+        try:
+            # Prepare sandbox globals
+            sandbox_globals = safe_globals.copy()
+            sandbox_globals.update(utility_builtins)
+            
+            # Restrict allowed modules
+            allowed_modules = sandbox.get("allowed_modules", [])
+            sandbox_globals["__builtins__"] = {
+                k: v for k, v in __builtins__.__dict__.items()
+                if k in ["print", "len", "range", "int", "str", "float", "bool", "list", "dict", "set"]
+            }
+            
+            # Import allowed modules
+            for module in allowed_modules:
+                if module == "math":
+                    import math
+                    sandbox_globals["math"] = math
+                elif module == "random":
+                    import random
+                    sandbox_globals["random"] = random
+                elif module == "datetime":
+                    import datetime
+                    sandbox_globals["datetime"] = datetime
+                elif module == "json":
+                    import json
+                    sandbox_globals["json"] = json
+                elif module == "pygame" and platform.system() == "Emscripten":
+                    import pygame
+                    sandbox_globals["pygame"] = pygame
+                elif module == "numpy":
+                    import numpy
+                    sandbox_globals["numpy"] = numpy
+                else:
+                    raise ValueError(f"Unsupported module: {module}")
+
+            # Prepare script locals with evaluated inputs
+            script_locals = {}
+            for key, expr in inputs.items():
+                script_locals[key] = self.evaluate_expr(expr, context)
+
+            # Compile and execute script with restrictions
+            max_execution_time = sandbox.get("max_execution_time", 5)
+            max_memory = sandbox.get("max_memory", 10240)  # Default 10MB
+            code = compile_restricted(script, "<inline>", "exec")
+            
+            with time_limit(max_execution_time), memory_limit(max_memory):
+                exec(code, sandbox_globals, script_locals)
+            
+            # Return the result (assuming script sets a 'result' variable)
+            return script_locals.get("result")
+        
+        except TimeoutException as e:
+            self.logger.error(f"Script execution timed out: {str(e)}")
+            raise
+        except MemoryError:
+            self.logger.error("Script exceeded memory limit")
+            raise
+        except Exception as e:
+            self.logger.error(f"Script execution failed: {str(e)}")
+            raise
+
+    async def evaluate_step(self, step: Dict[str, Any], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Evaluate a single step in the workflow."""
+        try:
+            step_type = step["type"]
+            self.logger.info(f"Evaluating step: {step_type} (id: {step.get('id', 'unknown')})")
+
+            # Handle timeout
+            timeout = step.get("timeout", {})
+            duration = timeout.get("duration", "30s")
+            max_retries = timeout.get("max_retries", 0)
+            action = timeout.get("action", "fail")
+            retries = 0
+
+            while retries <= max_retries:
+                try:
+                    if step_type == "set":
+                        value = self.evaluate_expr(step["value"], context)
+                        context[step["target"]] = value
+                        return None
+                    elif step_type == "if":
+                        condition = self.evaluate_expr(step["condition"], context)
+                        steps = step["then"] if condition else step.get("else", [])
+                        for sub_step in steps:
+                            result = await self.evaluate_step(sub_step, context)
+                            if result is not None:
+                                return result
+                        return None
+                    elif step_type == "return":
+                        return {"value": self.evaluate_expr(step["value"], context)}
+                    elif step_type == "call":
+                        # Placeholder for function call
+                        context[step["target"]] = {}  # Mock result
+                        return None
+                    elif step_type == "try":
+                        try:
+                            for sub_step in step["body"]:
+                                result = await self.evaluate_step(sub_step, context)
+                                if result is not None:
+                                    return result
+                        except Exception as e:
+                            if "catch" in step:
+                                catch = step["catch"]
+                                context[catch.get("error_var", "error")] = str(e)
+                                for sub_step in catch["body"]:
+                                    result = await self.evaluate_step(sub_step, context)
+                                    if result is not None:
+                                        return result
+                        finally:
+                            if "finally" in step:
+                                for sub_step in step["finally"]:
+                                    result = await self.evaluate_step(sub_step, context)
+                                    if result is not None:
+                                        return result
+                        return None
+                    elif step_type == "while":
+                        while self.evaluate_expr(step["condition"], context):
+                            for sub_step in step["body"]:
+                                result = await self.evaluate_step(sub_step, context)
+                                if result is not None:
+                                    return result
+                        return None
+                    elif step_type == "foreach":
+                        collection = self.evaluate_expr(step["collection"], context)
+                        for item in collection:
+                            context[step["iterator"]] = item
+                            for sub_step in step["body"]:
+                                result = await self.evaluate_step(sub_step, context)
+                                if result is not None:
+                                    return result
+                        return None
+                    elif step_type == "parallel":
+                        # Placeholder for parallel execution
+                        for branch in step["branches"]:
+                            for sub_step in branch:
+                                await self.evaluate_step(sub_step, context)
+                        return None
+                    elif step_type == "assert":
+                        if not self.evaluate_expr(step["condition"], context):
+                            raise AssertionError(step.get("message", "Assertion failed"))
+                        return None
+                    elif step_type == "event":
+                        self.logger.info(f"Emitting event: {step['name']} with params: {step['params']}")
+                        return None
+                    elif step_type == "require_role":
+                        # Placeholder for role check
+                        return None
+                    elif step_type in ["ai_infer", "ai_train", "ai_classify", "ai_embed", "ai_explain"]:
+                        # Placeholder for AI operations
+                        context[step["target"]] = {}  # Mock result
+                        return None
+                    elif step_type == "quantum_circuit":
+                        # Placeholder for quantum circuit
+                        context[step["target"]] = {}  # Mock result
+                        return None
+                    elif step_type == "quantum_measure":
+                        # Placeholder for quantum measurement
+                        context[step["target"]] = {}  # Mock result
+                        return None
+                    elif step_type == "quantum_algorithm":
+                        # Placeholder for quantum algorithm
+                        context[step["target"]] = {}  # Mock result
+                        return None
+                    elif step_type == "blockchain_operation":
+                        # Placeholder for blockchain operation
+                        context[step["target"]] = {}  # Mock result
+                        return None
+                    elif step_type == "crypto_sign":
+                        # Placeholder for crypto sign
+                        context[step["target"]] = {}  # Mock result
+                        return None
+                    elif step_type == "crypto_verify":
+                        # Placeholder for crypto verify
+                        context[step["target"]] = {}  # Mock result
+                        return None
+                    elif step_type == "regex_match":
+                        # Placeholder for regex match
+                        context[step["target"]] = {}  # Mock result
+                        return None
+                    elif step_type == "audit_log":
+                        self.logger.info(f"Audit log: {step['message']}")
+                        return None
+                    elif step_type == "call_workflow":
+                        # Placeholder for subworkflow
+                        context[step["target"]] = {}  # Mock result
+                        return None
+                    elif step_type.startswith("custom_"):
+                        # Placeholder for custom step
+                        return None
+                    elif step_type == "game_render":
+                        # Placeholder for game render
+                        context[step["render_target"]] = {}  # Mock render output
+                        return None
+                    elif step_type == "game_physics":
+                        # Placeholder for game physics
+                        context[step["target"]] = {}  # Mock physics state
+                        return None
+                    elif step_type == "game_multiplayer_sync":
+                        # Placeholder for multiplayer sync
+                        context[step["target"]] = {}  # Mock sync result
+                        return None
+                    elif step_type == "game_input":
+                        # Placeholder for game input
+                        context[step["target"]] = {}  # Mock input data
+                        return None
+                    elif step_type == "game_animation":
+                        # Placeholder for game animation
+                        context[step["target"]] = {}  # Mock animation result
+                        return None
+                    elif step_type == "script":
+                        inputs = step.get("inputs", {})
+                        sandbox = step.get("sandbox", {})
+                        result = self.execute_script(step["script"], inputs, sandbox, context)
+                        context[step["target"]] = result
+                        return None
+                    else:
+                        raise ValueError(f"Unknown step type: {step_type}")
+
+                except Exception as e:
+                    retries += 1
+                    if retries > max_retries:
+                        if action == "fail":
+                            raise
+                        elif action == "skip":
+                            self.logger.warning(f"Skipping step {step_type} after {retries} retries: {str(e)}")
+                            return None
+                        elif action == "retry":
+                            self.logger.warning(f"Retrying step {step_type} ({retries}/{max_retries}): {str(e)}")
+                            continue
+                    time.sleep(1)  # Backoff before retry
+
+            # Handle on_error
+            if "on_error" in step:
+                error_handler = step["on_error"]
+                if error_handler.get("step_id"):
+                    # Placeholder for jumping to error step
+                    pass
+                elif error_handler.get("body"):
+                    for sub_step in error_handler["body"]:
+                        result = await self.evaluate_step(sub_step, context)
+                        if result is not None:
+                            return result
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Error evaluating step {step.get('id', 'unknown')}: {str(e)}")
+            raise
+
+    async def execute_workflow(self, workflow: Dict[str, Any], initial_context: Dict[str, Any] = None) -> Any:
+        """Execute the entire workflow."""
+        try:
+            self.validate_workflow(workflow)
+            self.context = initial_context or {}
+            
+            # Apply execution policy
+            execution_policy = workflow.get("execution_policy", {})
+            max_runs_per_minute = execution_policy.get("max_runs_per_minute", float("inf"))
+            max_concurrent_runs = execution_policy.get("max_concurrent_runs", 1)
+            
+            # Placeholder for rate limiting and concurrency control
+            self.logger.info(f"Executing workflow: {workflow['function']}")
+
+            # Initialize context with schema context
+            for key, value in workflow["schema"].get("context", {}).items():
+                if value.get("source") in ["game_state", "player_input"]:
+                    self.context[key] = {}  # Mock game-specific context
+                else:
+                    self.context[key] = None  # Placeholder for other sources
+
+            # Execute steps
+            for step in workflow["steps"]:
+                result = await self.evaluate_step(step, self.context)
+                if result is not None:
+                    return result["value"]
+
+            # Return outputs
+            outputs = {}
+            for key, spec in workflow["schema"]["outputs"].items():
+                outputs[key] = self.context.get(key)
+            return outputs
+
+        except Exception as e:
+            self.logger.error(f"Workflow execution failed: {str(e)}")
+            raise
+
+# Example usage for Pyodide-compatible game script
+async def main():
+    schema = {...}  # Extended schema with script step
+    parser = JSONFlowParser(schema)
+    
+    workflow = {
+        "function": "gameWorkflow",
+        "schema": {
+            "inputs": {"player_input": {"type": "object", "source": "player_input"}},
+            "context": {"game_state": {"type": "game_state", "source": "game_state"}},
+            "outputs": {"updated_state": {"type": "game_state"}}
+        },
+        "metadata": {"schema_version": "1.1.0"},
+        "steps": [
+            {
+                "type": "script",
+                "id": "step1",
+                "script": "result = {'position': player_input['position'], 'score': game_state['score'] + 1}",
+                "target": "updated_state",
+                "sandbox": {
+                    "allowed_modules": ["math", "pygame"],
+                    "max_execution_time": 5,
+                    "max_memory": 10240
+                },
+                "inputs": {
+                    "player_input": {"get": "player_input"},
+                    "game_state": {"get": "game_state"}
+                }
+            }
+        ]
+    }
+    
+    context = {
+        "player_input": {"position": [0, 0, 0]},
+        "game_state": {"score": 100}
+    }
+    
+    result = await parser.execute_workflow(workflow, context)
+    print(f"Workflow result: {result}")
+
+if platform.system() == "Emscripten":
+    asyncio.ensure_future(main())
+else:
+    if __name__ == "__main__":
+        asyncio.run(main())

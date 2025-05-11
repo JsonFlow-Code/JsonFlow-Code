@@ -1210,7 +1210,7 @@ class Workflow:
             for part in parts:
                 if isinstance(current, dict) and part in current:
                     current = current[part]
-                elif part in state["variables"]:
+                elif part in state.get("variables", {}):
                     current = state["variables"][part]
                 else:
                     raise WorkflowValidationError(f"Invalid path in expression: {path}")
@@ -1218,9 +1218,65 @@ class Workflow:
 
         if "value" in expr:
             return expr["value"]
+
         elif "get" in expr:
             return await get_value(expr["get"])
+
         elif "add" in expr:
             values = [await self._evaluate_expression(op, state) for op in expr["add"]]
             if all(isinstance(v, (int, float)) for v in values):
-                return sum
+                return sum(values)
+            return "".join(str(v) for v in values)
+
+        elif "subtract" in expr:
+            values = [await self._evaluate_expression(op, state) for op in expr["subtract"]]
+            if len(values) < 2:
+                raise WorkflowValidationError("Subtract requires at least two operands")
+            result = values[0]
+            for v in values[1:]:
+                result -= v
+            return result
+
+        elif "multiply" in expr:
+            values = [await self._evaluate_expression(op, state) for op in expr["multiply"]]
+            result = 1
+            for v in values:
+                result *= v
+            return result
+
+        elif "divide" in expr:
+            values = [await self._evaluate_expression(op, state) for op in expr["divide"]]
+            if len(values) < 2:
+                raise WorkflowValidationError("Divide requires at least two operands")
+            result = values[0]
+            for v in values[1:]:
+                if v == 0:
+                    raise ZeroDivisionError("Division by zero in expression")
+                result /= v
+            return result
+
+        elif "equals" in expr:
+            values = [await self._evaluate_expression(op, state) for op in expr["equals"]]
+            return all(v == values[0] for v in values)
+
+        elif "not" in expr:
+            value = await self._evaluate_expression(expr["not"], state)
+            return not value
+
+        elif "and" in expr:
+            values = [await self._evaluate_expression(op, state) for op in expr["and"]]
+            return all(values)
+
+        elif "or" in expr:
+            values = [await self._evaluate_expression(op, state) for op in expr["or"]]
+            return any(values)
+
+        elif "if" in expr:
+            condition = await self._evaluate_expression(expr["if"]["condition"], state)
+            if condition:
+                return await self._evaluate_expression(expr["if"]["then"], state)
+            elif "else" in expr["if"]:
+                return await self._evaluate_expression(expr["if"]["else"], state)
+            return None
+
+        raise WorkflowValidationError(f"Unknown expression format: {expr}")

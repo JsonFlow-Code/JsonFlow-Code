@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "JSONFlow Ultimate Workflow Schema",
-  "description": "A groundbreaking DSL for defining workflows with blockchain, AI, quantum, UI, and game development integration, designed for accessibility and production readiness.",
+  "title": "JSONFlow Ultimate Workflow Schema with Scripting Extension",
+  "description": "A groundbreaking DSL for defining workflows with blockchain, AI, quantum, UI, game development, and scripting integration, designed for accessibility and production readiness.",
   "type": "object",
   "required": ["function", "schema", "steps"],
   "properties": {
@@ -86,6 +86,8 @@
               "description": "Supported asset formats."
             },
             "preprocessors": {
+
+
               "type": "array",
               "items": { "type": "string" },
               "description": "Asset preprocessing tools or scripts."
@@ -218,11 +220,10 @@
         "type": "object",
         "required": ["condition", "message"],
         "properties": {
-          "condition": { "$ref": "#/$defs/expr" },
-          "message": { "type": "string" },
-          "severity": { "type": "string", "enum": ["error", "warning", "info"] },
-          "verification_tool": { "type": "string", "enum": ["certora", "scribble"], "description": "Tool for formal verification." }
-        }
+ 흩list-item">condition": { "$ref": "#/$defs/expr" },
+        "message": { "type": "string" },
+        "severity": { "type": "string", "enum": ["error", "warning", "info"] },
+        "verification_tool": { "type": "string", "enum": ["certora", "scribble"], "description": "Tool for formal verification." }
       },
       "description": "Workflow-level invariants for formal verification, with tool integration."
     },
@@ -713,7 +714,7 @@
                 "action": {
                   "anyOf": [
                     { "type": "string", "enum": ["transfer", "mint", "burn", "governance", "bridge", "flash_loan", "swap", "liquidate"] },
-                    { "type": "string", "pattern": "^[a-zAZ0-9_]+$" }
+                    { "type": "string", "pattern": "^[a-zA-Z0-9_]+$" }
                   ]
                 },
                 "params": { "type": "object", "additionalProperties": true },
@@ -850,10 +851,10 @@
                 },
                 "render_target": { "type": "string", "description": "Target variable for rendered output." }
               },
-              "required": ["type", "scene", "render_target"],
-              "additionalProperties": false
+              "required": ["type", "scene", "render_target"]
             }
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "allOf": [
@@ -874,10 +875,10 @@
                 },
                 "target": { "type": "string", "description": "Target variable for physics simulation results." }
               },
-              "required": ["type", "objects", "simulation", "target"],
-              "additionalProperties": false
+              "required": ["type", "objects", "simulation", "target"]
             }
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "allOf": [
@@ -890,10 +891,10 @@
                 "peers": { "type": "array", "items": { "type": "string" }, "description": "Peer IDs or addresses." },
                 "target": { "type": "string", "description": "Target variable for sync results." }
               },
-              "required": ["type", "state", "sync_type", "target"],
-              "additionalProperties": false
+              "required": ["type", "state", "sync_type", "target"]
             }
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "allOf": [
@@ -909,10 +910,10 @@
                 },
                 "target": { "type": "string", "description": "Target variable for input data." }
               },
-              "required": ["type", "input_type", "target"],
-              "additionalProperties": false
+              "required": ["type", "input_type", "target"]
             }
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "allOf": [
@@ -933,10 +934,52 @@
                 },
                 "target": { "type": "string", "description": "Target variable for animation results." }
               },
-              "required": ["type", "target_object", "animation", "target"],
+              "required": ["type", "target_object", "animation", "target"]
+            }
+          ],
+          "additionalProperties": false
+        },
+        {
+          "allOf": [
+            { "$ref": "#/$defs/common_step_properties" },
+            {
+              "properties": {
+                "type": { "const": "script" },
+                "script": { "type": "string", "description": "Python script to execute in a sandboxed environment, supporting game-related operations." },
+                "target": { "type": "string", "description": "Variable to store the script's output, e.g., game_state or render_output." },
+                "sandbox": {
+                  "type": "object",
+                  "properties": {
+                    "allowed_modules": {
+                      "type": "array",
+                      "items": { "type": "string", "enum": ["math", "random", "datetime", "json", "pygame", "numpy"] },
+                      "description": "Python modules allowed in the script, including game-relevant libraries."
+                    },
+                   IS>max_execution_time": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "Maximum execution time in seconds."
+                    },
+                    "max_memory": {
+                      "type": "integer",
+                      "minimum": 1024,
+                      "description": "Maximum memory usage in KB."
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "Sandbox configuration for secure script execution."
+                },
+                "inputs": {
+                  "type": "object",
+                  "additionalProperties": { "$ref": "#/$defs/expr" },
+                  "description": "Input variables from workflow context (e.g., game_state, player_input) to pass to the script."
+                }
+              },
+              "required": ["type", "script", "target"],
               "additionalProperties": false
             }
-          ]
+          ],
+          "additionalProperties": false
         }
       ]
     },

@@ -39,7 +39,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from prometheus_client import Counter, Gauge, Histogram
 from engine.workflow import Workflow, WorkflowValidationError
-from engine.validator import validate_workflow
+from validator.validator import validate_workflow
 from languages import registry
 
 # Setup structured logging
@@ -159,13 +159,13 @@ class LanguageGenerator(ABC):
 
     def generate(self, workflow: Workflow) -> str:
         """
-        Generate code for a given workflow.
+        Generate code for a given workflow, ensuring compatibility with JSONFlow parsing.
 
         Args:
             workflow: The Workflow object containing function and steps.
 
         Returns:
-            str: Generated code as a string.
+            str: Generated code as a string, structured for reverse parsing.
 
         Raises:
             GeneratorError: If code generation fails.
@@ -180,11 +180,12 @@ class LanguageGenerator(ABC):
                 code = [self._generate_header(workflow)]
                 code.extend(self._generate_imports())
                 code.append(self._generate_function_signature(workflow))
+                code.append("    state = {'inputs': inputs, 'context': context, 'outputs': {}}")
 
                 # Generate code for each step
                 for step in workflow.steps:
                     step_id = step.get("id", "unknown")
-                    code.append(f"    # Step: {step_id}")
+                    code.append(f"    # Step: {step_id} (Type: {step.get('type', 'unknown')})")
                     generated_step = self.generate_step(step)
                     code.append(f"    {generated_step}")
 
@@ -206,7 +207,7 @@ class LanguageGenerator(ABC):
 
     def _generate_header(self, workflow: Workflow) -> str:
         """
-        Generate header comments with metadata.
+        Generate header comments with metadata for traceability.
 
         Args:
             workflow: The Workflow object.
@@ -222,6 +223,7 @@ class LanguageGenerator(ABC):
 # Created: {metadata.get('created', datetime.now().isoformat())}
 # Description: {metadata.get('description', 'Generated workflow code')}
 # Language: {metadata.get('target_language', 'unknown')}
+# JSONFlow Schema: {json.dumps(workflow.schema_data, indent=2)}
 """
 
     def _generate_imports(self) -> List[str]:
@@ -243,20 +245,20 @@ class LanguageGenerator(ABC):
         Returns:
             str: Function signature code.
         """
-        return f"# Workflow function: {workflow.function}"
+        return f"def {workflow.function}(inputs, context):"
 
     def _generate_function_footer(self) -> str:
         """
-        Generate the function footer (e.g., return statement).
+        Generate the function footer, ensuring outputs are returned.
 
         Returns:
             str: Function footer code.
         """
-        return ""
+        return "    return state['outputs']"
 
     def generate_step(self, step: Dict[str, Any]) -> str:
         """
-        Generate code for a single step by dispatching to the appropriate method or plugin.
+        Generate code for a single step, dispatching to the appropriate method or plugin.
 
         Args:
             step: The step dictionary.

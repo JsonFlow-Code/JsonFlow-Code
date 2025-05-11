@@ -39,7 +39,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from prometheus_client import Counter, Gauge, Histogram
 from engine.workflow import Workflow, WorkflowValidationError
-from engine.validator import validate_workflow
+from validator.validator import validate_workflow
 from engine.generator import generate_workflow
 from languages import registry
 
@@ -197,6 +197,7 @@ async def execute_workflow(workflow: Workflow, inputs: Dict[str, Any], context: 
             # Validate inputs against schema
             for key, spec in workflow.schema_data.get("inputs", {}).items():
                 if key not in inputs and spec.get("constraints", {}).get("required", False):
+                    logger.error(f"Missing required input: {key}")
                     raise ExecutorError(f"Missing required input: {key}")
 
             # Generate code

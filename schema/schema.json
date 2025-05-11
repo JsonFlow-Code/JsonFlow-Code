@@ -1,98 +1,140 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "JSONFlow Ultimate Workflow Schema with Scripting Extension",
-  "description": "A groundbreaking DSL for defining workflows with blockchain, AI, quantum, UI, game development, and scripting integration, designed for accessibility and production readiness.",
+  "title": "JSONFlow Ultimate Workflow Schema",
+  "description": "A production-ready DSL for defining interoperable workflows integrating blockchain, AI, quantum computing, UI, and game development with robust scripting and verification.",
   "type": "object",
-  "required": ["function", "schema", "steps"],
+  "required": ["function", "schema", "steps", "metadata"],
   "properties": {
     "function": {
       "type": "string",
-      "description": "Unique identifier for the workflow, matching Solidity function naming conventions.",
+      "description": "Unique workflow identifier adhering to Solidity naming conventions for cross-platform compatibility.",
       "minLength": 1,
       "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$"
     },
     "metadata": {
       "type": "object",
       "properties": {
-        "schema_version": { "type": "string", "description": "Version of the JSONFlow schema (e.g., '1.1.0')." },
-        "version": { "type": "string", "description": "Workflow version." },
-        "author": { "type": "string" },
-        "description": { "type": "string" },
+        "schema_version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "Semantic version of the JSONFlow schema (e.g., '1.2.0')."
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "Workflow version."
+        },
+        "author": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
         "created": { "type": "string", "format": "date-time" },
         "updated": { "type": "string", "format": "date-time" },
-        "tags": { "type": "array", "items": { "type": "string" } },
-        "mermaid": { "type": "string", "description": "Mermaid diagram for workflow visualization." },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "mermaid": {
+          "type": "string",
+          "description": "Mermaid diagram for workflow visualization, encoded as a string."
+        },
         "target_languages": {
           "type": "array",
-          "items": { "type": "string", "enum": ["solidity", "cairo", "rust", "python", "javascript", "go", "typescript", "java", "kotlin"] },
-          "description": "Supported output languages for code generation."
+          "items": {
+            "type": "string",
+            "enum": ["solidity", "cairo", "rust", "python", "javascript", "typescript", "go", "java", "kotlin", "c++"]
+          },
+          "uniqueItems": true,
+          "description": "Supported languages for code generation."
         },
         "game_engines": {
           "type": "array",
-          "items": { "type": "string", "enum": ["unity", "unreal", "godot", "custom"] },
-          "description": "Supported game engines for code generation."
+          "items": {
+            "type": "string",
+            "enum": ["unity", "unreal", "godot", "bevy", "custom"]
+          },
+          "uniqueItems": true,
+          "description": "Supported game engines."
         },
         "dependencies": {
           "type": "object",
           "additionalProperties": {
             "type": "object",
             "properties": {
-              "version": { "type": "string" },
-              "hash": { "type": "string" },
-              "type": { "type": "string", "enum": ["library", "game_library", "asset"] }
+              "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+              "hash": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+              "type": { "type": "string", "enum": ["library", "game_library", "asset", "contract"] },
+              "source": { "type": "string", "format": "uri", "description": "URI to dependency source." }
             },
-            "required": ["version", "type"],
+            "required": ["version", "type", "hash"],
             "additionalProperties": false
           },
-          "description": "External libraries, game libraries, or assets with version, hash, and type for integrity."
+          "description": "External dependencies with version, hash, and type for integrity."
         }
       },
-      "required": ["schema_version"],
+      "required": ["schema_version", "version", "author", "description"],
       "additionalProperties": false,
-      "description": "Metadata with restricted keys for security."
+      "description": "Metadata for versioning, authorship, and dependency management."
     },
     "ui": {
       "$ref": "#/$defs/ui",
-      "description": "React-specific UI configuration for the entire workflow."
+      "description": "Global UI configuration supporting React and game-specific interfaces."
     },
     "access_policy": {
       "type": "object",
       "properties": {
-        "roles": { "type": "array", "items": { "type": "string" }, "description": "Roles allowed to execute the workflow." },
-        "permissions": { "type": "array", "items": { "type": "string" }, "description": "Permissions required for execution." }
+        "roles": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "description": "Roles authorized to execute the workflow."
+        },
+        "permissions": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "description": "Required permissions."
+        },
+        "policy_engine": {
+          "type": "string",
+          "enum": ["opa", "custom"],
+          "description": "Policy engine for access control (e.g., Open Policy Agent)."
+        }
       },
-      "description": "Workflow-level access control policy."
+      "required": ["roles", "permissions"],
+      "additionalProperties": false,
+      "description": "Access control policy for workflow execution."
     },
     "game": {
       "type": "object",
-      "description": "Game development configuration for the workflow.",
       "properties": {
         "engine": {
           "type": "string",
-          "enum": ["unity", "unreal", "godot", "custom"],
-          "description": "Target game engine for the workflow."
+          "enum": ["unity", "unreal", "godot", "bevy", "custom"],
+          "description": "Target game engine."
         },
         "platforms": {
           "type": "array",
-          "items": { "type": "string", "enum": ["pc", "console", "mobile", "web", "vr"] },
-          "description": "Target platforms for the game."
+          "items": { "type": "string", "enum": ["pc", "console", "mobile", "web", "vr", "ar"] },
+          "uniqueItems": true,
+          "description": "Target platforms."
         },
         "asset_pipeline": {
           "type": "object",
           "properties": {
             "formats": {
               "type": "array",
-              "items": { "type": "string", "enum": ["fbx", "gltf", "png", "wav", "mp3"] },
+              "items": { "type": "string", "enum": ["fbx", "gltf", "png", "jpg", "wav", "mp3", "ogg"] },
+              "uniqueItems": true,
               "description": "Supported asset formats."
             },
             "preprocessors": {
-
-
               "type": "array",
-              "items": { "type": "string" },
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true,
               "description": "Asset preprocessing tools or scripts."
             }
           },
+          "required": ["formats"],
           "additionalProperties": false
         },
         "multiplayer": {
@@ -100,12 +142,16 @@
           "properties": {
             "type": { "type": "string", "enum": ["p2p", "client-server", "hybrid"] },
             "max_players": { "type": "integer", "minimum": 1 },
-            "network_protocol": { "type": "string", "enum": ["udp", "tcp", "websocket"] }
+            "network_protocol": { "type": "string", "enum": ["udp", "tcp", "websocket", "webrtc"] },
+            "latency_tolerance": { "type": "integer", "minimum": 0, "description": "Max latency in ms." }
           },
+          "required": ["type", "max_players"],
           "additionalProperties": false
         }
       },
-      "additionalProperties": false
+      "required": ["engine", "platforms"],
+      "additionalProperties": false,
+      "description": "Game development configuration."
     },
     "schema": {
       "type": "object",
@@ -118,37 +164,49 @@
             "required": ["type"],
             "properties": {
               "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "object", "array", "null"] },
-              "default": { "anyOf": [{ "type": "string" }, { "type": "integer" }, { "type": "number" }, { "type": "boolean" }, { "type": "object" }, { "type": "array" }, { "type": "null" }] },
-              "description": { "type": "string" },
+              "default": {
+                "anyOf": [
+                  { "type": "string" },
+                  { "type": "integer" },
+                  { "type": "number" },
+                  { "type": "boolean" },
+                  { "type": "object" },
+                  { "type": "array" },
+                  { "type": "null" }
+                ]
+              },
+              "description": { "type": "string", "minLength": 1 },
               "nl_noun": {
                 "oneOf": [
-                  { "type": "string" },
-                  { "type": "object", "additionalProperties": { "type": "string" } }
+                  { "type": "string", "minLength": 1 },
+                  { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } }
                 ],
-                "description": "Natural language noun (e.g., 'User'). Supports localization."
+                "description": "Natural language noun for localization."
               },
               "nl_description": {
                 "oneOf": [
-                  { "type": "string" },
-                  { "type": "object", "additionalProperties": { "type": "string" } }
+                  { "type": "string", "minLength": 1 },
+                  { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } }
                 ],
-                "description": "Natural language explanation. Supports localization."
+                "description": "Natural language description for localization."
               },
               "constraints": {
                 "type": "object",
                 "properties": {
-                  "minLength": { "type": "integer" },
-                  "maxLength": { "type": "integer" },
-                  "pattern": { "type": "string" },
+                  "minLength": { "type": "integer", "minimum": 0 },
+                  "maxLength": { "type": "integer", "minimum": 0 },
+                  "pattern": { "type": "string", "minLength": 1 },
                   "minimum": { "type": "number" },
                   "maximum": { "type": "number" },
-                  "enum": { "type": "array", "items": { "type": ["string", "number", "boolean"] } }
-                }
+                  "enum": {
+                    "type": "array",
+                    "items": { "type": ["string", "number", "boolean"] },
+                    "minItems": 1
+                  }
+                },
+                "additionalProperties": false
               },
-              "ui": {
-                "$ref": "#/$defs/ui",
-                "description": "React or game-specific UI configuration for this input."
-              }
+              "ui": { "$ref": "#/$defs/ui" }
             },
             "additionalProperties": false
           }
@@ -157,22 +215,25 @@
           "type": "object",
           "additionalProperties": {
             "type": "object",
-            "required": ["type"],
+            "required": ["type", "source"],
             "properties": {
               "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "object", "array", "null"] },
               "nl_noun": {
                 "oneOf": [
-                  { "type": "string" },
-                  { "type": "object", "additionalProperties": { "type": "string" } }
+                  { "type": "string", "minLength": 1 },
+                  { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } }
                 ]
               },
               "nl_description": {
                 "oneOf": [
-                  { "type": "string" },
-                  { "type": "object", "additionalProperties": { "type": "string" } }
+                  { "type": "string", "minLength": 1 },
+                  { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } }
                 ]
               },
-              "source": { "type": "string", "enum": ["env", "config", "blockchain", "external_api", "game_state", "player_input"] }
+              "source": {
+                "type": "string",
+                "enum": ["env", "config", "blockchain", "external_api", "game_state", "player_input", "database"]
+              }
             },
             "additionalProperties": false
           }
@@ -183,24 +244,24 @@
             "type": "object",
             "required": ["type"],
             "properties": {
-              "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "object", "array", "null", "game_state", "render_output", "physics_state"] },
-              "description": { "type": "string" },
+              "type": {
+                "type": "string",
+                "enum": ["string", "integer", "number", "boolean", "object", "array", "null", "game_state", "render_output", "physics_state"]
+              },
+              "description": { "type": "string", "minLength": 1 },
               "nl_noun": {
                 "oneOf": [
-                  { "type": "string" },
-                  { "type": "object", "additionalProperties": { "type": "string" } }
+                  { "type": "string", "minLength": 1 },
+                  { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } }
                 ]
               },
               "nl_description": {
                 "oneOf": [
-                  { "type": "string" },
-                  { "type": "object", "additionalProperties": { "type": "string" } }
+                  { "type": "string", "minLength": 1 },
+                  { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } }
                 ]
               },
-              "ui": {
-                "$ref": "#/$defs/ui",
-                "description": "React or game-specific UI configuration for this output."
-              }
+              "ui": { "$ref": "#/$defs/ui" }
             },
             "additionalProperties": false
           }
@@ -220,33 +281,47 @@
         "type": "object",
         "required": ["condition", "message"],
         "properties": {
- 흩list-item">condition": { "$ref": "#/$defs/expr" },
-        "message": { "type": "string" },
-        "severity": { "type": "string", "enum": ["error", "warning", "info"] },
-        "verification_tool": { "type": "string", "enum": ["certora", "scribble"], "description": "Tool for formal verification." }
+          "condition": { "$ref": "#/$defs/expr" },
+          "message": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "enum": ["error", "warning", "info"], "default": "error" },
+          "verification_tool": {
+            "type": "string",
+            "enum": ["certora", "scribble", "mythril"],
+            "description": "Tool for formal verification."
+          }
+        },
+        "additionalProperties": false
       },
-      "description": "Workflow-level invariants for formal verification, with tool integration."
+      "minItems": 1,
+      "description": "Invariants for formal verification."
     },
     "tests": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "type"],
+        "required": ["name", "type", "inputs", "expected"],
         "properties": {
-          "name": { "type": "string" },
-          "type": { "type": "string", "enum": ["example", "property", "fuzz"], "description": "Test type: example-based, property-based, or fuzz testing." },
-          "inputs": { "type": "object", "description": "Input values for the test." },
-          "expected": { "type": "object", "description": "Expected output values." },
-          "context": { "type": "object", "description": "Context for the test." },
-          "description": { "type": "string" },
+          "name": { "type": "string", "minLength": 1 },
+          "type": {
+            "type": "string",
+            "enum": ["example", "property", "fuzz"],
+            "description": "Test type: example-based, property-based, or fuzz testing."
+          },
+          "inputs": { "type": "object" },
+          "expected": { "type": "object" },
+          "context": { "type": "object" },
+          "description": { "type": "string", "minLength": 1 },
           "properties": {
             "type": "array",
             "items": { "$ref": "#/$defs/expr" },
-            "description": "Properties to verify for property-based or fuzz testing."
+            "minItems": 1,
+            "description": "Properties for property-based or fuzz testing."
           }
-        }
+        },
+        "additionalProperties": false
       },
-      "description": "Test cases for example-based, property-based, or fuzz testing."
+      "minItems": 1,
+      "description": "Comprehensive test cases."
     },
     "steps": {
       "type": "array",
@@ -256,12 +331,17 @@
     "attestation": {
       "type": "object",
       "properties": {
-        "signers": { "type": "array", "items": { "type": "string" } },
-        "signature": { "type": "string" },
-        "hash": { "type": "string" }
+        "signers": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+          "uniqueItems": true
+        },
+        "signature": { "type": "string", "pattern": "^0x[a-fA-F0-9]+$" },
+        "hash": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" }
       },
+      "required": ["signers", "signature", "hash"],
       "additionalProperties": false,
-      "description": "Workflow attestation for authenticity and integrity."
+      "description": "Cryptographic attestation for workflow integrity."
     },
     "history": {
       "type": "array",
@@ -269,61 +349,76 @@
         "type": "object",
         "properties": {
           "timestamp": { "type": "string", "format": "date-time" },
-          "author": { "type": "string" },
-          "change_summary": { "type": "string" },
-          "diff": { "type": "string" }
+          "author": { "type": "string", "minLength": 1 },
+          "change_summary": { "type": "string", "minLength": 1 },
+          "diff": { "type": "string", "description": "JSON patch or diff string." }
         },
         "required": ["timestamp", "author", "change_summary"],
         "additionalProperties": false
       },
-      "description": "Audit trail of workflow revisions."
+      "description": "Audit trail of workflow changes."
     },
     "execution_policy": {
       "type": "object",
       "properties": {
-        "max_runs_per_minute": { "type": "integer", "minimum": 1 },
-        "max_concurrent_runs": { "type": "integer", "minimum": 1 }
+        "max_runs_per_minute": { "type": "integer", "minimum": 1, "default": 60 },
+        "max_concurrent_runs": { "type": "integer", "minimum": 1, "default": 10 },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"], "default": "medium" }
       },
+      "required": ["max_runs_per_minute", "max_concurrent_runs"],
       "additionalProperties": false,
-      "description": "Rate limiting and execution policies."
+      "description": "Execution rate limiting and prioritization."
     },
     "secrets": {
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
-          "source": { "type": "string", "enum": ["env", "vault", "other"] }
+          "name": { "type": "string", "minLength": 1 },
+          "source": { "type": "string", "enum": ["env", "vault", "kms", "secret_manager"] },
+          "key_id": { "type": "string", "description": "Identifier for key in source." }
         },
-        "required": ["name"],
+        "required": ["name", "source"],
         "additionalProperties": false
       },
-      "description": "References to secrets used in the workflow."
+      "uniqueItems": true,
+      "description": "Secure references to secrets."
     },
     "subworkflows": {
       "type": "array",
-      "items": { "type": "string" },
-      "description": "List of subworkflow IDs or URIs."
+      "items": { "type": "string", "format": "uri", "description": "URI to subworkflow." },
+      "uniqueItems": true,
+      "description": "References to subworkflows for modularity."
     },
     "verification_results": {
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
-          "tool": { "type": "string" },
-          "date": { "type": "string", "format": "date" },
+          "tool": { "type": "string", "minLength": 1 },
+          "date": { "type": "string", "format": "date-time" },
           "result": { "type": "string", "enum": ["success", "failure", "partial"] },
-          "properties_verified": { "type": "array", "items": { "type": "string" } }
+          "properties_verified": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          }
         },
         "required": ["tool", "date", "result"],
         "additionalProperties": false
       },
-      "description": "Results of formal verification."
+      "description": "Formal verification results."
     },
     "resource_estimates": {
       "type": "object",
-      "additionalProperties": { "type": "number" },
-      "description": "Estimated resource usage for the workflow."
+      "properties": {
+        "cpu": { "type": "number", "minimum": 0, "description": "CPU usage in cores." },
+        "memory": { "type": "number", "minimum": 0, "description": "Memory in MB." },
+        "storage": { "type": "number", "minimum": 0, "description": "Storage in MB." },
+        "network": { "type": "number", "minimum": 0, "description": "Network bandwidth in Mbps." }
+      },
+      "additionalProperties": false,
+      "description": "Estimated resource usage."
     }
   },
   "additionalProperties": false,
@@ -331,72 +426,98 @@
     "ui": {
       "type": "object",
       "properties": {
+        "framework": {
+          "type": "string",
+          "enum": ["react", "vue", "svelte", "game"],
+          "default": "react",
+          "description": "UI framework."
+        },
         "component": {
           "type": "string",
-          "description": "React or game-specific component name (e.g., 'TextField', 'HUD', '3DCanvas')."
+          "minLength": 1,
+          "description": "Component name (e.g., 'TextField', 'HUD', '3DCanvas')."
         },
         "props": {
           "type": "object",
           "additionalProperties": true,
-          "description": "Props for the component, including game-specific props like position or rotation."
+          "description": "Component props, including game-specific properties."
         },
         "css": {
           "type": "object",
           "properties": {
-            "className": { "type": "string", "description": "CSS class name for styling." },
-            "style": { "type": "object", "additionalProperties": true, "description": "Inline CSS or 3D transform styles." }
+            "className": { "type": "string", "minLength": 1 },
+            "style": { "type": "object", "additionalProperties": true }
           },
           "additionalProperties": false
         },
         "game_ui": {
           "type": "object",
           "properties": {
-            "type": { "type": "string", "enum": ["hud", "menu", "3d", "vr"] },
-            "position": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 3 },
+            "type": { "type": "string", "enum": ["hud", "menu", "3d", "vr", "ar"] },
+            "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
             "rotation": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
             "scale": { "type": "number", "minimum": 0 }
           },
-          "additionalProperties": false,
-          "description": "Game-specific UI properties."
+          "required": ["type"],
+          "additionalProperties": false
         }
       },
-      "additionalProperties": true,
-      "description": "React or game-specific UI configuration."
+      "required": ["framework", "component"],
+      "additionalProperties": false,
+      "description": "UI configuration for React, Vue, Svelte, or game interfaces."
     },
     "common_step_properties": {
       "type": "object",
       "properties": {
-        "id": { "type": "string", "description": "Unique identifier for the step." },
+        "id": { "type": "string", "minLength": 1, "description": "Unique step identifier." },
         "on_error": { "$ref": "#/$defs/on_error" },
         "nl_phrase": {
           "oneOf": [
-            { "type": "string" },
-            { "type": "object", "additionalProperties": { "type": "string" } }
+            { "type": "string", "minLength": 1 },
+            { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } }
           ],
-          "description": "Natural language description of the step. Supports localization."
+          "description": "Localized natural language description."
         },
         "access_control": {
           "type": "object",
           "properties": {
-            "roles": { "type": "array", "items": { "type": "string" } },
-            "permissions": { "type": "array", "items": { "type": "string" } }
-          }
+            "roles": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            },
+            "permissions": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true
+            }
+          },
+          "additionalProperties": false
         },
         "timeout": {
           "type": "object",
           "properties": {
-            "duration": { "type": "string", "description": "Duration (e.g., '30s', '1m')." },
-            "action": { "type": "string", "enum": ["skip", "retry", "fail"] },
-            "max_retries": { "type": "integer", "minimum": 0 }
-          }
+            "duration": { "type": "string", "pattern": "^\\d+[smh]$" },
+            "action": { "type": "string", "enum": ["skip", "retry", "fail"], "default": "fail" },
+            "max_retries": { "type": "integer", "minimum": 0, "default": 0 }
+          },
+          "required": ["duration"],
+          "additionalProperties": false
         },
         "ui": { "$ref": "#/$defs/ui" },
         "resource_estimates": {
           "type": "object",
-          "additionalProperties": { "type": "number" },
-          "description": "Estimated resource usage for this step."
+          "properties": {
+            "cpu": { "type": "number", "minimum": 0 },
+            "memory": { "type": "number", "minimum": 0 },
+            "storage": { "type": "number", "minimum": 0 },
+            "network": { "type": "number", "minimum": 0 }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "required": ["id"],
+      "additionalProperties": false
     },
     "step": {
       "oneOf": [
@@ -406,7 +527,7 @@
             {
               "properties": {
                 "type": { "const": "set" },
-                "target": { "type": "string" },
+                "target": { "type": "string", "minLength": 1 },
                 "value": { "$ref": "#/$defs/expr" }
               },
               "required": ["type", "target", "value"]
@@ -448,9 +569,9 @@
             {
               "properties": {
                 "type": { "const": "call" },
-                "function": { "type": "string" },
+                "function": { "type": "string", "minLength": 1 },
                 "args": { "type": "object", "additionalProperties": { "$ref": "#/$defs/expr" } },
-                "target": { "type": "string" }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "function", "args", "target"]
             }
@@ -467,9 +588,11 @@
                 "catch": {
                   "type": "object",
                   "properties": {
-                    "error_var": { "type": "string" },
+                    "error_var": { "type": "string", "minLength": 1 },
                     "body": { "type": "array", "items": { "$ref": "#/$defs/step" }, "minItems": 1 }
-                  }
+                  },
+                  "required": ["error_var", "body"],
+                  "additionalProperties": false
                 },
                 "finally": { "type": "array", "items": { "$ref": "#/$defs/step" }, "minItems": 1 }
               },
@@ -485,7 +608,8 @@
               "properties": {
                 "type": { "const": "while" },
                 "condition": { "$ref": "#/$defs/expr" },
-                "body": { "type": "array", "items": { "$ref": "#/$defs/step" }, "minItems": 1 }
+                "body": { "type": "array", "items": { "$ref": "#/$defs/step" }, "minItems": 1 },
+                "max_iterations": { "type": "integer", "minimum": 1, "default": 1000 }
               },
               "required": ["type", "condition", "body"]
             }
@@ -499,7 +623,7 @@
               "properties": {
                 "type": { "const": "foreach" },
                 "collection": { "$ref": "#/$defs/expr" },
-                "iterator": { "type": "string" },
+                "iterator": { "type": "string", "minLength": 1 },
                 "body": { "type": "array", "items": { "$ref": "#/$defs/step" }, "minItems": 1 }
               },
               "required": ["type", "collection", "iterator", "body"]
@@ -513,7 +637,17 @@
             {
               "properties": {
                 "type": { "const": "parallel" },
-                "branches": { "type": "array", "items": { "type": "array", "items": { "$ref": "#/$defs/step" }, "minItems": 1 }, "minItems": 1 }
+                "branches": {
+                  "type": "array",
+                  "items": { "type": "array", "items": { "$ref": "#/$defs/step" }, "minItems": 1 },
+                  "minItems": 1
+                },
+                "merge_strategy": {
+                  "type": "string",
+                  "enum": ["all", "first", "last"],
+                  "default": "all",
+                  "description": "How to merge parallel branch results."
+                }
               },
               "required": ["type", "branches"]
             }
@@ -527,9 +661,9 @@
               "properties": {
                 "type": { "const": "assert" },
                 "condition": { "$ref": "#/$defs/expr" },
-                "message": { "type": "string" }
+                "message": { "type": "string", "minLength": 1 }
               },
-              "required": ["type", "condition"]
+              "required": ["type", "condition", "message"]
             }
           ],
           "additionalProperties": false
@@ -540,7 +674,7 @@
             {
               "properties": {
                 "type": { "const": "event" },
-                "name": { "type": "string" },
+                "name": { "type": "string", "minLength": 1 },
                 "params": { "type": "object", "additionalProperties": { "$ref": "#/$defs/expr" } }
               },
               "required": ["type", "name", "params"]
@@ -554,7 +688,7 @@
             {
               "properties": {
                 "type": { "const": "require_role" },
-                "role": { "type": "string" }
+                "role": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "role"]
             }
@@ -567,10 +701,10 @@
             {
               "properties": {
                 "type": { "const": "ai_infer" },
-                "model": { "type": "string" },
+                "model": { "type": "string", "minLength": 1 },
                 "input": { "$ref": "#/$defs/expr" },
                 "parameters": { "type": "object", "additionalProperties": true },
-                "target": { "type": "string" }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "model", "input", "target"]
             }
@@ -583,10 +717,10 @@
             {
               "properties": {
                 "type": { "const": "ai_train" },
-                "model": { "type": "string" },
+                "model": { "type": "string", "minLength": 1 },
                 "data": { "$ref": "#/$defs/expr" },
                 "parameters": { "type": "object", "additionalProperties": true },
-                "target": { "type": "string" }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "model", "data", "target"]
             }
@@ -599,10 +733,10 @@
             {
               "properties": {
                 "type": { "const": "ai_classify" },
-                "model": { "type": "string" },
+                "model": { "type": "string", "minLength": 1 },
                 "input": { "$ref": "#/$defs/expr" },
                 "parameters": { "type": "object", "additionalProperties": true },
-                "target": { "type": "string" }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "model", "input", "target"]
             }
@@ -615,10 +749,10 @@
             {
               "properties": {
                 "type": { "const": "ai_embed" },
-                "model": { "type": "string" },
+                "model": { "type": "string", "minLength": 1 },
                 "input": { "$ref": "#/$defs/expr" },
                 "parameters": { "type": "object", "additionalProperties": true },
-                "target": { "type": "string" }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "model", "input", "target"]
             }
@@ -631,10 +765,10 @@
             {
               "properties": {
                 "type": { "const": "ai_explain" },
-                "model": { "type": "string" },
+                "model": { "type": "string", "minLength": 1 },
                 "input": { "$ref": "#/$defs/expr" },
                 "parameters": { "type": "object", "additionalProperties": true },
-                "target": { "type": "string" }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "model", "input", "target"]
             }
@@ -653,9 +787,12 @@
                     "type": "object",
                     "required": ["gate", "target"],
                     "properties": {
-                      "gate": { "type": "string", "enum": ["H", "X", "Y", "Z", "CNOT", "T", "S", "RX", "RY", "RZ"] },
-                      "target": { "type": "integer", "minimum": 0 },
-                      "control": { "type": "integer", "minimum": 0 },
+                      "gate": {
+                        "type": "string",
+                        "enum": ["H", "X", "Y", "Z", "CNOT", "T", "S", "RX", "RY", "RZ", "SWAP", "TOFFOLI"]
+                      },
+                      "target": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 1 },
+                      "control": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
                       "parameters": { "type": "object", "additionalProperties": { "type": "number" } }
                     },
                     "additionalProperties": false
@@ -663,7 +800,7 @@
                   "minItems": 1
                 },
                 "qubits": { "type": "integer", "minimum": 1 },
-                "target": { "type": "string" }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "gates", "qubits", "target"]
             }
@@ -677,9 +814,10 @@
               "properties": {
                 "type": { "const": "quantum_measure" },
                 "circuit": { "$ref": "#/$defs/expr" },
-                "target": { "type": "string" }
+                "qubits": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "minItems": 1 },
+                "target": { "type": "string", "minLength": 1 }
               },
-              "required": ["type", "circuit", "target"]
+              "required": ["type", "circuit", "qubits", "target"]
             }
           ],
           "additionalProperties": false
@@ -690,9 +828,9 @@
             {
               "properties": {
                 "type": { "const": "quantum_algorithm" },
-                "algorithm": { "type": "string", "enum": ["grover", "shor", "qft"] },
+                "algorithm": { "type": "string", "enum": ["grover", "shor", "qft", "vqe", "qaoa"] },
                 "parameters": { "type": "object", "additionalProperties": true },
-                "target": { "type": "string" }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "algorithm", "parameters", "target"]
             }
@@ -706,36 +844,33 @@
               "properties": {
                 "type": { "const": "blockchain_operation" },
                 "chain": {
-                  "anyOf": [
-                    { "type": "string", "enum": ["ethereum", "solana", "starknet", "cosmos", "polkadot"] },
-                    { "type": "string", "pattern": "^[a-zA-Z0-9_]+$" }
-                  ]
+                  "type": "string",
+                  "enum": ["ethereum", "solana", "starknet", "cosmos", "polkadot", "binance", "avalanche"]
                 },
                 "action": {
-                  "anyOf": [
-                    { "type": "string", "enum": ["transfer", "mint", "burn", "governance", "bridge", "flash_loan", "swap", "liquidate"] },
-                    { "type": "string", "pattern": "^[a-zA-Z0-9_]+$" }
-                  ]
+                  "type": "string",
+                  "enum": ["transfer", "mint", "burn", "governance", "bridge", "flash_loan", "swap", "liquidate", "deploy_contract"]
                 },
                 "params": { "type": "object", "additionalProperties": true },
                 "gas": {
                   "type": "object",
                   "properties": {
-                    "estimate": { "type": "boolean" },
-                    "optimize": { "type": "boolean" },
-                    "limit": { "type": "integer" },
-                    "max_fee_per_gas": { "type": "integer" },
-                    "priority_fee_per_gas": { "type": "integer" }
-                  }
+                    "estimate": { "type": "boolean", "default": true },
+                    "limit": { "type": "integer", "minimum": 21000 },
+                    "max_fee_per_gas": { "type": "integer", "minimum": 0 },
+                    "priority_fee_per_gas": { "type": "integer", "minimum": 0 }
+                  },
+                  "additionalProperties": false
                 },
                 "replay_protection": {
                   "type": "object",
                   "properties": {
-                    "nonce": { "type": "string" },
-                    "idempotency_key": { "type": "string" }
-                  }
+                    "nonce": { "type": "string", "pattern": "^0x[a-fA-F0-9]+$" },
+                    "idempotency_key": { "type": "string", "minLength": 1 }
+                  },
+                  "additionalProperties": false
                 },
-                "target": { "type": "string" }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "chain", "action", "params", "target"]
             }
@@ -748,10 +883,10 @@
             {
               "properties": {
                 "type": { "const": "crypto_sign" },
-                "algorithm": { "type": "string", "enum": ["ecdsa", "ed25519", "rsa"] },
+                "algorithm": { "type": "string", "enum": ["ecdsa", "ed25519", "rsa", "schnorr"] },
                 "data": { "$ref": "#/$defs/expr" },
                 "key": { "$ref": "#/$defs/expr" },
-                "target": { "type": "string" }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "algorithm", "data", "key", "target"]
             }
@@ -764,11 +899,11 @@
             {
               "properties": {
                 "type": { "const": "crypto_verify" },
-                "algorithm": { "type": "string", "enum": ["ecdsa", "ed25519", "rsa"] },
+                "algorithm": { "type": "string", "enum": ["ecdsa", "ed25519", "rsa", "schnorr"] },
                 "data": { "$ref": "#/$defs/expr" },
                 "signature": { "$ref": "#/$defs/expr" },
                 "key": { "$ref": "#/$defs/expr" },
-                "target": { "type": "string" }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "algorithm", "data", "signature", "key", "target"]
             }
@@ -781,9 +916,9 @@
             {
               "properties": {
                 "type": { "const": "regex_match" },
-                "pattern": { "type": "string" },
+                "pattern": { "type": "string", "minLength": 1 },
                 "input": { "$ref": "#/$defs/expr" },
-                "target": { "type": "string" }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "pattern", "input", "target"]
             }
@@ -796,7 +931,7 @@
             {
               "properties": {
                 "type": { "const": "audit_log" },
-                "message": { "type": "string" },
+                "message": { "type": "string", "minLength": 1 },
                 "metadata": { "type": "object", "additionalProperties": true }
               },
               "required": ["type", "message"]
@@ -810,9 +945,9 @@
             {
               "properties": {
                 "type": { "const": "call_workflow" },
-                "workflow": { "type": "string" },
+                "workflow": { "type": "string", "format": "uri" },
                 "args": { "type": "object", "additionalProperties": { "$ref": "#/$defs/expr" } },
-                "target": { "type": "string" }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "workflow", "args", "target"]
             }
@@ -825,7 +960,7 @@
             {
               "properties": {
                 "type": { "type": "string", "pattern": "^custom_[a-zA-Z0-9_]+$" },
-                "custom_properties": { "type": "object" }
+                "custom_properties": { "type": "object", "additionalProperties": true }
               },
               "required": ["type", "custom_properties"]
             }
@@ -838,18 +973,18 @@
             {
               "properties": {
                 "type": { "const": "game_render" },
-                "scene": { "$ref": "#/$defs/expr", "description": "Scene data or reference to render." },
+                "scene": { "$ref": "#/$defs/expr" },
                 "camera": {
                   "type": "object",
                   "properties": {
                     "position": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
                     "rotation": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
-                    "fov": { "type": "number" }
+                    "fov": { "type": "number", "minimum": 0 }
                   },
                   "required": ["position"],
                   "additionalProperties": false
                 },
-                "render_target": { "type": "string", "description": "Target variable for rendered output." }
+                "render_target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "scene", "render_target"]
             }
@@ -862,7 +997,7 @@
             {
               "properties": {
                 "type": { "const": "game_physics" },
-                "objects": { "type": "array", "items": { "$ref": "#/$defs/expr" }, "description": "Game objects with physics properties." },
+                "objects": { "type": "array", "items": { "$ref": "#/$defs/expr" }, "minItems": 1 },
                 "simulation": {
                   "type": "object",
                   "properties": {
@@ -873,7 +1008,7 @@
                   "required": ["type"],
                   "additionalProperties": false
                 },
-                "target": { "type": "string", "description": "Target variable for physics simulation results." }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "objects", "simulation", "target"]
             }
@@ -886,12 +1021,12 @@
             {
               "properties": {
                 "type": { "const": "game_multiplayer_sync" },
-                "state": { "$ref": "#/$defs/expr", "description": "Game state to synchronize." },
+                "state": { "$ref": "#/$defs/expr" },
                 "sync_type": { "type": "string", "enum": ["state", "event", "delta"] },
-                "peers": { "type": "array", "items": { "type": "string" }, "description": "Peer IDs or addresses." },
-                "target": { "type": "string", "description": "Target variable for sync results." }
+                "peers": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+                "target": { "type": "string", "minLength": 1 }
               },
-              "required": ["type", "state", "sync_type", "target"]
+              "required": ["type", "state", "sync_type", "peers", "target"]
             }
           ],
           "additionalProperties": false
@@ -902,15 +1037,15 @@
             {
               "properties": {
                 "type": { "const": "game_input" },
-                "input_type": { "type": "string", "enum": ["keyboard", "mouse", "controller", "touch", "vr"] },
+                "input_type": { "type": "string", "enum": ["keyboard", "mouse", "controller", "touch", "vr", "ar"] },
                 "bindings": {
                   "type": "object",
-                  "additionalProperties": { "type": "string" },
-                  "description": "Input action mappings (e.g., 'jump': 'space')."
+                  "additionalProperties": { "type": "string", "minLength": 1 },
+                  "minProperties": 1
                 },
-                "target": { "type": "string", "description": "Target variable for input data." }
+                "target": { "type": "string", "minLength": 1 }
               },
-              "required": ["type", "input_type", "target"]
+              "required": ["type", "input_type", "bindings", "target"]
             }
           ],
           "additionalProperties": false
@@ -921,7 +1056,7 @@
             {
               "properties": {
                 "type": { "const": "game_animation" },
-                "target_object": { "$ref": "#/$defs/expr", "description": "Object to animate." },
+                "target_object": { "$ref": "#/$defs/expr" },
                 "animation": {
                   "type": "object",
                   "properties": {
@@ -932,7 +1067,7 @@
                   "required": ["type"],
                   "additionalProperties": false
                 },
-                "target": { "type": "string", "description": "Target variable for animation results." }
+                "target": { "type": "string", "minLength": 1 }
               },
               "required": ["type", "target_object", "animation", "target"]
             }
@@ -945,38 +1080,37 @@
             {
               "properties": {
                 "type": { "const": "script" },
-                "script": { "type": "string", "description": "Python script to execute in a sandboxed environment, supporting game-related operations." },
-                "target": { "type": "string", "description": "Variable to store the script's output, e.g., game_state or render_output." },
+                "language": {
+                  "type": "string",
+                  "enum": ["python", "javascript", "lua"],
+                  "default": "python",
+                  "description": "Scripting language."
+                },
+                "script": { "type": "string", "minLength": 1 },
+                "target": { "type": "string", "minLength": 1 },
                 "sandbox": {
                   "type": "object",
                   "properties": {
                     "allowed_modules": {
                       "type": "array",
-                      "items": { "type": "string", "enum": ["math", "random", "datetime", "json", "pygame", "numpy"] },
-                      "description": "Python modules allowed in the script, including game-relevant libraries."
+                      "items": {
+                        "type": "string",
+                        "enum": ["math", "random", "datetime", "json", "pygame", "numpy", "mathjs", "lodash"]
+                      },
+                      "uniqueItems": true
                     },
-                   IS>max_execution_time": {
-                      "type": "integer",
-                      "minimum": 1,
-                      "description": "Maximum execution time in seconds."
-                    },
-                    "max_memory": {
-                      "type": "integer",
-                      "minimum": 1024,
-                      "description": "Maximum memory usage in KB."
-                    }
+                    "max_execution_time": { "type": "integer", "minimum": 1 },
+                    "max_memory": { "type": "integer", "minimum": 1024 }
                   },
-                  "additionalProperties": false,
-                  "description": "Sandbox configuration for secure script execution."
+                  "required": ["max_execution_time", "max_memory"],
+                  "additionalProperties": false
                 },
                 "inputs": {
                   "type": "object",
-                  "additionalProperties": { "$ref": "#/$defs/expr" },
-                  "description": "Input variables from workflow context (e.g., game_state, player_input) to pass to the script."
+                  "additionalProperties": { "$ref": "#/$defs/expr" }
                 }
               },
-              "required": ["type", "script", "target"],
-              "additionalProperties": false
+              "required": ["type", "language", "script", "target", "sandbox"]
             }
           ],
           "additionalProperties": false
@@ -986,7 +1120,7 @@
     "expr": {
       "type": "object",
       "properties": {
-        "get": { "type": "string", "pattern": "^[a-zA-Z0-9_\\.]+$", "description": "Variable name, restricted to safe characters." },
+        "get": { "type": "string", "pattern": "^[a-zA-Z0-9_\\.]+$", "minLength": 1 },
         "value": { "type": ["string", "number", "boolean", "object", "array", "null"] },
         "add": { "type": "array", "items": { "$ref": "#/$defs/valueOrExpr" }, "minItems": 2 },
         "subtract": { "type": "array", "items": { "$ref": "#/$defs/valueOrExpr" }, "minItems": 2 },
@@ -1010,7 +1144,7 @@
           "type": "object",
           "required": ["algorithm", "input"],
           "properties": {
-            "algorithm": { "type": "string", "enum": ["sha256", "sha3", "keccak256"] },
+            "algorithm": { "type": "string", "enum": ["sha256", "sha3", "keccak256", "blake2b"] },
             "input": { "$ref": "#/$defs/valueOrExpr" }
           },
           "additionalProperties": false
@@ -1019,14 +1153,32 @@
           "type": "object",
           "required": ["pattern", "input"],
           "properties": {
-            "pattern": { "type": "string" },
+            "pattern": { "type": "string", "minLength": 1 },
             "input": { "$ref": "#/$defs/valueOrExpr" }
+          },
+          "additionalProperties": false
+        },
+        "map": {
+          "type": "object",
+          "required": ["collection", "operation"],
+          "properties": {
+            "collection": { "$ref": "#/$defs/expr" },
+            "operation": { "$ref": "#/$defs/expr" }
+          },
+          "additionalProperties": false
+        },
+        "filter": {
+          "type": "object",
+          "required": ["collection", "condition"],
+          "properties": {
+            "collection": { "$ref": "#/$defs/expr" },
+            "condition": { "$ref": "#/$defs/expr" }
           },
           "additionalProperties": false
         }
       },
       "additionalProperties": false,
-      "description": "Expression with validation to prevent injection."
+      "description": "Secure expression language."
     },
     "valueOrExpr": {
       "anyOf": [
@@ -1042,9 +1194,14 @@
     "on_error": {
       "type": "object",
       "properties": {
-        "step_id": { "type": "string", "description": "ID of step to execute on error, validated to prevent cycles." },
+        "step_id": { "type": "string", "minLength": 1 },
         "body": { "type": "array", "items": { "$ref": "#/$defs/step" }, "minItems": 1 }
       },
+      "oneOf": [
+        { "required": ["step_id"] },
+        { "required": ["body"] }
+      ],
+      "additionalProperties": false,
       "description": "Error handling with cycle prevention."
     }
   }

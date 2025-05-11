@@ -33,13 +33,14 @@ import sys
 import json
 import importlib
 import pkgutil
-from typing import Dict, Any, Type, List, Optional
+from typing import Dict, Any, List, Optional, Type
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from datetime import datetime
-from prometheus_client import Counter, Gauge
+from prometheus_client import Counter, Gauge, Histogram
 from engine.workflow import Workflow, WorkflowValidationError
-from jinja2 import Environment, BaseLoader
+from engine.validator import validate_workflow
+from languages import registry
 
 # Setup structured logging
 logging.basicConfig(
@@ -52,46 +53,12 @@ logger = logging.getLogger(__name__)
 # Prometheus metrics
 generator_executions = Counter('generator_executions_total', 'Total code generations', ['language'])
 generation_errors = Counter('generation_errors_total', 'Total generation errors', ['language'])
+generation_duration = Histogram('generation_duration_seconds', 'Code generation duration', ['language'])
 resource_usage = Gauge('resource_usage', 'Resource usage during generation', ['language', 'resource_type'])
 
 class GeneratorError(Exception):
     """Exception raised for errors in the code generation process."""
     pass
-
-class TCCLogger:
-    """Traceable logging for plugin operations."""
-    def __init__(self):
-        self.tcc_log: List[Dict[str, Any]] = []
-        self.step_counter: int = 0
-
-    def log(self, operation: str, input_data: bytes, output_data: bytes, metadata: Dict[str, Any] = None, log_level: str = "INFO", error_code: str = "NONE") -> None:
-        entry = {
-            "step": self.step_counter,
-            "operation": operation,
-            "input_data": base64.b64encode(input_data).decode('utf-8'),
-            "output_data": base64.b64encode(output_data).decode('utf-8'),
-            "metadata": metadata or {},
-            "log_level": log_level,
-            "error_code": error_code,
-            "prev_hash": self._compute_prev_hash(),
-            "operation_id": hashlib.sha256(f"{self.step_counter}:{operation}:{time.time_ns()}".encode()).hexdigest()[:32],
-            "timestamp": time.time_ns(),
-            "execution_time_ns": 0
-        }
-        self.tcc_log.append(entry)
-        self.step_counter += 1
-        logger.info(f"TCC Log: {operation} - Step {entry['step']} - ID {entry['operation_id']}")
-
-    def _compute_prev_hash(self) -> str:
-        if not self.tcc_log:
-            return base64.b64encode(b'\x00' * 32).decode('utf-8')
-        last_entry = self.tcc_log[-1]
-        return base64.b64encode(hashlib.sha256(json.dumps(last_entry).encode()).digest()).decode('utf-8')
-
-    def save_log(self, filename: str) -> None:
-        with open(filename, 'w') as f:
-            for entry in self.tcc_log:
-                f.write(json.dumps(entry) + '\n')
 
 class PluginInterface(ABC):
     """Interface for generator plugins."""
@@ -114,7 +81,6 @@ class PluginManager:
     """Manages plugin loading and registration."""
     def __init__(self):
         self.plugins: Dict[str, PluginInterface] = {}
-        self.logger = TCCLogger()
 
     def load_plugins(self, plugin_dir: str = "languages.plugins") -> None:
         """
@@ -133,37 +99,11 @@ class PluginManager:
                         metadata = plugin.get_metadata()
                         plugin_name = metadata.get("name", module_name)
                         self.plugins[plugin_name] = plugin
-                        self.logger.log(
-                            "plugin_load",
-                            module_name.encode('utf-8'),
-                            plugin_name.encode('utf-8'),
-                            {"metadata": metadata}
-                        )
-                        logger.info(f"Loaded plugin: {plugin_name}")
+                        logger.info(f"Loaded plugin: {plugin_name} (version: {metadata.get('version', 'unknown')})")
                 except Exception as e:
-                    logger.error(f"Failed to load plugin {module_name}: {str(e)}")
-                    self.logger.log(
-                        "plugin_load_error",
-                        module_name.encode('utf-8'),
-                        str(e).encode('utf-8'),
-                        {"error": str(e)},
-                        "ERROR",
-                        "PLUGIN_LOAD_FAILED"
-                    )
+                    logger.error(f"Failed to load plugin {module_name}: {str(e)}", exc_info=True)
         except ImportError as e:
-            logger.error(f"Failed to import plugin package {plugin_dir}: {str(e)}")
-
-    def get_plugin(self, plugin_name: str) -> Optional[PluginInterface]:
-        """
-        Retrieve a plugin by name.
-
-        Args:
-            plugin_name: Name of the plugin.
-
-        Returns:
-            Optional[PluginInterface]: The plugin instance or None if not found.
-        """
-        return self.plugins.get(plugin_name)
+            logger.error(f"Failed to import plugin package {plugin_dir}: {str(e)}", exc_info=True)
 
     def get_supported_steps(self) -> Dict[str, PluginInterface]:
         """
@@ -175,22 +115,33 @@ class PluginManager:
         supported_steps = {}
         for plugin in self.plugins.values():
             for step_type in plugin.get_step_types():
+                if step_type in supported_steps:
+                    logger.warning(f"Duplicate step type {step_type} registered by plugin {plugin.get_metadata()['name']}")
                 supported_steps[step_type] = plugin
         return supported_steps
 
 @contextmanager
 def generation_context(language: str, description: str):
-    """Context manager for code generation."""
+    """
+    Context manager for code generation with metrics and logging.
+
+    Args:
+        language: Target language for generation.
+        description: Description of the generation task.
+    """
     logger.info(f"Starting generation: {description} for {language}")
     generator_executions.labels(language=language).inc()
+    start_time = datetime.now()
     try:
         yield
     except Exception as e:
         generation_errors.labels(language=language).inc()
-        logger.error(f"Generation failed: {description} - {str(e)}")
-        raise GeneratorError(f"Generation failed: {str(e)}")
+        logger.error(f"Generation failed: {description} - {str(e)}", exc_info=True)
+        raise
     finally:
-        logger.info(f"Completed generation: {description}")
+        duration = (datetime.now() - start_time).total_seconds()
+        generation_duration.labels(language=language).observe(duration)
+        logger.info(f"Completed generation: {description} in {duration:.2f}s")
         resource_usage.labels(language=language, resource_type="memory").set(sys.getsizeof({}))
 
 class LanguageGenerator(ABC):
@@ -198,20 +149,13 @@ class LanguageGenerator(ABC):
     Base class for language-specific code generators.
     """
     def __init__(self):
-        self.jinja_env = Environment(loader=BaseLoader())
-        self.logger = TCCLogger()
         self.plugin_manager = PluginManager()
         self.plugin_manager.load_plugins()
+        self.plugin_steps = self.plugin_manager.get_supported_steps()
         self.supported_steps = {
             "set", "if", "return", "call", "try", "while", "foreach", "parallel",
-            "assert", "event", "require_role", "ai_infer", "ai_train", "ai_classify",
-            "ai_embed", "ai_explain", "quantum_circuit", "quantum_measure",
-            "quantum_algorithm", "blockchain_operation", "crypto_sign",
-            "crypto_verify", "regex_match", "audit_log", "call_workflow",
-            "game_render", "game_physics", "game_multiplayer_sync", "game_input",
-            "game_animation", "script"
+            "assert", "event", "require_role"
         }
-        self.plugin_steps = self.plugin_manager.get_supported_steps()
 
     def generate(self, workflow: Workflow) -> str:
         """
@@ -226,72 +170,39 @@ class LanguageGenerator(ABC):
         Raises:
             GeneratorError: If code generation fails.
         """
-        with generation_context(workflow.metadata.get("target_language", "unknown"), f"Workflow {workflow.function}"):
+        language = workflow.metadata.get("target_language", "unknown")
+        with generation_context(language, f"Workflow {workflow.function}"):
             try:
                 # Validate workflow
-                self._validate_workflow(workflow)
+                validate_workflow(workflow)
 
+                # Initialize code output
                 code = [self._generate_header(workflow)]
                 code.extend(self._generate_imports())
                 code.append(self._generate_function_signature(workflow))
 
+                # Generate code for each step
                 for step in workflow.steps:
-                    code.append(f"    # Step: {step['id']}")
+                    step_id = step.get("id", "unknown")
+                    code.append(f"    # Step: {step_id}")
                     generated_step = self.generate_step(step)
                     code.append(f"    {generated_step}")
-                    self.logger.log(
-                        "generate_step",
-                        json.dumps(step).encode('utf-8'),
-                        generated_step.encode('utf-8'),
-                        {"step_id": step['id'], "step_type": step['type']}
-                    )
 
                 code.append(self._generate_function_footer())
                 generated_code = "\n".join(code)
 
-                # Update metrics
-                resource_usage.labels(
-                    language=workflow.metadata.get("target_language", "unknown"),
-                    resource_type="memory"
-                ).set(sys.getsizeof(generated_code))
+                # Update resource usage metrics
+                resource_usage.labels(language=language, resource_type="memory").set(sys.getsizeof(generated_code))
 
-                self.logger.log(
-                    "generate_workflow",
-                    json.dumps(workflow.metadata).encode('utf-8'),
-                    generated_code.encode('utf-8'),
-                    {"function": workflow.function}
-                )
-
+                logger.info(f"Generated code for workflow {workflow.function} ({len(code)} lines)")
                 return generated_code
 
+            except WorkflowValidationError as e:
+                logger.error(f"Workflow validation failed: {str(e)}")
+                raise GeneratorError(f"Invalid workflow: {str(e)}")
             except Exception as e:
-                self.logger.log(
-                    "generate_error",
-                    json.dumps(workflow.metadata).encode('utf-8'),
-                    str(e).encode('utf-8'),
-                    {"error": str(e)},
-                    "ERROR",
-                    "GENERATION_FAILED"
-                )
+                logger.error(f"Code generation failed: {str(e)}", exc_info=True)
                 raise GeneratorError(f"Code generation failed: {str(e)}")
-
-    def _validate_workflow(self, workflow: Workflow) -> None:
-        """
-        Validate the workflow structure and metadata.
-
-        Args:
-            workflow: The Workflow object to validate.
-
-        Raises:
-            WorkflowValidationError: If validation fails.
-        """
-        if not workflow.function:
-            raise WorkflowValidationError("Workflow function name is required")
-        if not workflow.steps:
-            raise WorkflowValidationError("Workflow must contain at least one step")
-        for step in workflow.steps:
-            if "type" not in step or "id" not in step:
-                raise WorkflowValidationError(f"Step must have 'type' and 'id': {step}")
 
     def _generate_header(self, workflow: Workflow) -> str:
         """
@@ -310,6 +221,7 @@ class LanguageGenerator(ABC):
 # Author: {metadata.get('author', 'Unknown')}
 # Created: {metadata.get('created', datetime.now().isoformat())}
 # Description: {metadata.get('description', 'Generated workflow code')}
+# Language: {metadata.get('target_language', 'unknown')}
 """
 
     def _generate_imports(self) -> List[str]:
@@ -353,16 +265,33 @@ class LanguageGenerator(ABC):
             str: Generated code for the step.
 
         Raises:
-            GeneratorError: If step type is unsupported.
+            GeneratorError: If step type is unsupported or generation fails.
         """
-        step_type = step['type']
-        if step_type.startswith("custom_"):
-            return self.generate_custom_step(step)
+        step_type = step.get('type', '')
+        step_id = step.get('id', 'unknown')
+
+        if not step_type:
+            logger.error(f"Step {step_id} missing type")
+            raise GeneratorError(f"Step {step_id} missing type")
+
         if step_type in self.plugin_steps:
             plugin = self.plugin_steps[step_type]
-            return plugin.generate_step(step, workflow.metadata.get("target_language", "unknown"))
-        method = getattr(self, f"generate_{step_type}", self.generate_default)
-        return method(step)
+            try:
+                return plugin.generate_step(step, workflow.metadata.get("target_language", "unknown"))
+            except Exception as e:
+                logger.error(f"Plugin {plugin.get_metadata()['name']} failed for step {step_id}: {str(e)}")
+                raise GeneratorError(f"Plugin failed for step {step_type}: {str(e)}")
+
+        if step_type in self.supported_steps:
+            method = getattr(self, f"generate_{step_type}", self.generate_default)
+            try:
+                return method(step)
+            except Exception as e:
+                logger.error(f"Failed to generate step {step_id} of type {step_type}: {str(e)}")
+                raise GeneratorError(f"Failed to generate step {step_type}: {str(e)}")
+
+        logger.warning(f"Unsupported step type {step_type} for step {step_id}")
+        return self.generate_default(step)
 
     def generate_default(self, step: Dict[str, Any]) -> str:
         """
@@ -374,20 +303,9 @@ class LanguageGenerator(ABC):
         Returns:
             str: Placeholder code for unsupported steps.
         """
-        return f"# Unsupported step type: {step['type']} # ID: {step['id']}"
-
-    def generate_custom_step(self, step: Dict[str, Any]) -> str:
-        """
-        Generate code for custom steps.
-
-        Args:
-            step: The step dictionary.
-
-        Returns:
-            str: Code for custom step.
-        """
-        props = step.get("custom_properties", {})
-        return f"# Custom step: {step['type']} with properties {json.dumps(props, indent=2)}"
+        step_type = step.get('type', 'unknown')
+        step_id = step.get('id', 'unknown')
+        return f"# Unsupported step type: {step_type} # ID: {step_id}"
 
     @abstractmethod
     def generate_set(self, step: Dict[str, Any]) -> str:
@@ -444,102 +362,26 @@ class LanguageGenerator(ABC):
         """Generate code for a 'require_role' step."""
         pass
 
-    @abstractmethod
-    def generate_ai_infer(self, step: Dict[str, Any]) -> str:
-        """Generate code for an 'ai_infer' step."""
-        pass
+def generate_workflow(workflow: Workflow) -> str:
+    """
+    Generate code for a workflow using the appropriate language generator.
 
-    @abstractmethod
-    def generate_ai_train(self, step: Dict[str, Any]) -> str:
-        """Generate code for an 'ai_train' step."""
-        pass
+    Args:
+        workflow: The Workflow object.
 
-    @abstractmethod
-    def generate_ai_classify(self, step: Dict[str, Any]) -> str:
-        """Generate code for an 'ai_classify' step."""
-        pass
+    Returns:
+        str: Generated code.
 
-    @abstractmethod
-    def generate_ai_embed(self, step: Dict[str, Any]) -> str:
-        """Generate code for an 'ai_embed' step."""
-        pass
-
-    @abstractmethod
-    def generate_ai_explain(self, step: Dict[str, Any]) -> str:
-        """Generate code for an 'ai_explain' step."""
-        pass
-
-    @abstractmethod
-    def generate_quantum_circuit(self, step: Dict[str, Any]) -> str:
-        """Generate code for a 'quantum_circuit' step."""
-        pass
-
-    @abstractmethod
-    def generate_quantum_measure(self, step: Dict[str, Any]) -> str:
-        """Generate code for a 'quantum_measure' step."""
-        pass
-
-    @abstractmethod
-    def generate_quantum_algorithm(self, step: Dict[str, Any]) -> str:
-        """Generate code for a 'quantum_algorithm' step."""
-        pass
-
-    @abstractmethod
-    def generate_blockchain_operation(self, step: Dict[str, Any]) -> str:
-        """Generate code for a 'blockchain_operation' step."""
-        pass
-
-    @abstractmethod
-    def generate_crypto_sign(self, step: Dict[str, Any]) -> str:
-        """Generate code for a 'crypto_sign' step."""
-        pass
-
-    @abstractmethod
-    def generate_crypto_verify(self, step: Dict[str, Any]) -> str:
-        """Generate code for a 'crypto_verify' step."""
-        pass
-
-    @abstractmethod
-    def generate_regex_match(self, step: Dict[str, Any]) -> str:
-        """Generate code for a 'regex_match' step."""
-        pass
-
-    @abstractmethod
-    def generate_audit_log(self, step: Dict[str, Any]) -> str:
-        """Generate code for an 'audit_log' step."""
-        pass
-
-    @abstractmethod
-    def generate_call_workflow(self, step: Dict[str, Any]) -> str:
-        """Generate code for a 'call_workflow' step."""
-        pass
-
-    @abstractmethod
-    def generate_game_render(self, step: Dict[str, Any]) -> str:
-        """Generate code for a 'game_render' step."""
-        pass
-
-    @abstractmethod
-    def generate_game_physics(self, step: Dict[str, Any]) -> str:
-        """Generate code for a 'game_physics' step."""
-        pass
-
-    @abstractmethod
-    def generate_game_multiplayer_sync(self, step: Dict[str, Any]) -> str:
-        """Generate code for a 'game_multiplayer_sync' step."""
-        pass
-
-    @abstractmethod
-    def generate_game_input(self, step: Dict[str, Any]) -> str:
-        """Generate code for a 'game_input' step."""
-        pass
-
-    @abstractmethod
-    def generate_game_animation(self, step: Dict[str, Any]) -> str:
-        """Generate code for an 'game_animation' step."""
-        pass
-
-    @abstractmethod
-    def generate_script(self, step: Dict[str, Any]) -> str:
-        """Generate code for a 'script' step."""
-        pass
+    Raises:
+        GeneratorError: If generation fails.
+    """
+    language = workflow.metadata.get("target_language", "python")
+    try:
+        generator = registry.get_generator(language)
+        return generator.generate(workflow)
+    except ValueError as e:
+        logger.error(f"Unsupported language: {language}")
+        raise GeneratorError(f"Unsupported language: {language}")
+    except Exception as e:
+        logger.error(f"Workflow generation failed: {str(e)}", exc_info=True)
+        raise GeneratorError(f"Workflow generation failed: {str(e)}")
